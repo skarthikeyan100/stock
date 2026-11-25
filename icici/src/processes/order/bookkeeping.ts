@@ -2908,6 +2908,18 @@ class OrderBookkeeping {
             // Claim the id like the sibling foreign-sell sync: a live delivery of the same order must not book it a second time.
             if (this.processedFillIds.has(this.fk(broker, f.orderId))) continue;
             Log.log(`[order] ALERT: EOD sync ${broker}: ${target.user} ${target.tsym} - a Sell of ${qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is in the broker's own fills but was never booked - booking it now`);
+            // A sell that is still a TRACKED resting order of the platform (the 15 s poll has not seen it fill yet) goes through recordFill like the poll's own
+            // booking: the strategy that owns the leg is told. Booking it here silently (the sync tells no strategy) claimed the order id, the poll's recordFill then
+            // dropped it as 'already processed' and the strategy never learnt of its own fill (live 2026-11-25 12:48: ScaledHedged PE sell filled 12:48:24, the sync
+            // booked it 12:48:31, the strategy kept the leg open and its hedge was lost). A fill whose order is no longer tracked is booked silently as before.
+            let live = false;
+            try { live = (this.pendingSource?.(broker) ?? []).some((o) => o.orderId === f.orderId && o.action === 'Sell'); } catch { live = false; }
+            if (live) {
+                Log.log(`[order] EOD sync ${broker}: order ${f.orderId} (${target.tsym}) is a resting order of ${target.user} that filled before the poll saw it - delivered like a polled fill (the strategy is told)`);
+                await this.recordFill(ev);
+                booked++;
+                continue;
+            }
             this.processedFillIds.add(this.fk(broker, f.orderId));
             const hadQty = Number(target.quantity) > 0; // captured before the booking mutates the row
             try { await this._processTradeEvent(ev); } catch (e) { this.processedFillIds.delete(this.fk(broker, f.orderId)); throw e; }

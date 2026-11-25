@@ -168,6 +168,22 @@ async function main() {
     const mism: any[] = [];
     const nf = await b.bookMissingSellFills('ant', fills, rows, mism);
     assert(nf === 1 && b.trades.length === 0 && docs.some((d) => d.action === 'Sell' && d.price === 104), 'ant: untimed order -> the logged single-holder FALLBACK books it in the sync');
+    // a sell that is still a TRACKED resting order (the 15 s poll has not seen it fill) is delivered like a polled fill: the strategy is told (live 2026-11-25 12:48);
+    // one that is not tracked is booked silently as before
+    for (const tracked of [true, false]) {
+        reset();
+        const TR = uniq('26112000');
+        b.untimedForeignOrders.add(`ant|${TR}`);
+        b.trades.push(platformTrade('ant', AT, 'ContinuousStrategy-Ant', 195, 114, ist(10, 50, 5)));
+        b.setPendingOrderSource(() => (tracked ? [{ orderId: TR, userId: 'ContinuousStrategy-Ant', tradingSymbol: AT, action: 'Sell' as const, quantity: 195 }] : []));
+        const told: string[] = [];
+        b.fillListeners.push((_u: string, t: any) => { if (t.brokerOrderId === TR) told.push(t.brokerOrderId); });
+        const nt = await b.bookMissingSellFills('ant', [{ orderId: TR, action: 'Sell' as const, tsym: AT, token: '55555', qty: 195, price: 104 }], rows, []);
+        b.fillListeners.pop();
+        assert(nt === 1 && b.trades.length === 0, `sync books the fill (${tracked ? 'tracked' : 'untracked'})`);
+        assert(told.length === (tracked ? 1 : 0), tracked ? 'a tracked resting sell: the strategies are told (fill listeners run)' : 'an untracked sell is booked silently');
+        b.setPendingOrderSource(() => []);
+    }
     // timed book + ownerless sell: bookMissingSellFills no longer guesses
     reset();
     const AMX = uniq('26112000');

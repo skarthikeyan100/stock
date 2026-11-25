@@ -11,6 +11,7 @@ import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
 import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution } from './unconfirmedBuy';
 import { bookPlatformSoldLegs } from './platformSells';
+import { lostFollowUp } from './chainFollowUp';
 import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
@@ -382,6 +383,27 @@ export default class SimpleContinuousStrategy extends Strategy {
                 Log.log(`[SimpleContinuousStrategy] reconcile: could not read pending sells for ${leg.tsym}; assuming none rest:`, e);
                 leg.sellQty = 0;
             }
+        }
+        this.scheduleLostFollowUp(); // after every close above (platform sells booked, outside closes): state only
+        this.save();
+    }
+
+    // A closed leg whose follow-up was lost (see chainFollowUp.ts): marked for the persisted hedgeWaiting retry (state only: a reconcile places no order, the
+    // Nifty-tick retry does the buying with every guard of hedge()). A first order that made its target is marked restarted exactly as afterLegClosed does.
+    // Not while disabled or stopped (max-profit trip / EOD): the leg is then picked up by the first reconcile that finds the strategy enabled and running.
+    private scheduleLostFollowUp(): void {
+        if (!this.enabled || this.isStopped()) return;
+        const lost = lostFollowUp(Object.values(this.state.legs));
+        if (!lost) return;
+        const leg = lost.leg as SimpleLeg;
+        if (lost.firstOrderProfit) {
+            leg.hedged = true;
+            leg.restarted = true;
+            Log.log(`[SimpleContinuousStrategy] ALERT: reconcile: ${leg.tsym} (${leg.id}) closed at a profit with no hedge and its follow-up was never run - no same-direction re-buy, the contract selection runs again for a new root`);
+        } else {
+            leg.hedgeWaiting = true;
+            leg.hedgeSame = lost.same;
+            Log.log(`[SimpleContinuousStrategy] ALERT: reconcile: ${leg.tsym} (${leg.id}) closed by the platform's own sell (${leg.soldQty} @ ${(leg.soldValue / leg.soldQty).toFixed(2)}, entry ${leg.entry.toFixed(2)}) with its follow-up never run - the hedge is queued (hedgeWaiting): the ${lost.same ? 'same' : 'opposite'} right is bought from the next Nifty ticks (a reconcile places no order)`);
         }
         this.save();
     }
@@ -1169,6 +1191,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         const live = Object.values(this.state.legs).filter((l) => l.status === 'open' || (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge);
         const reopened = live.length > 0 ? [] : Object.values(this.state.legs).filter((l) => l.role === 'root' && l.status === 'closed' && !l.restarted);
         for (const l of reopened) { l.restarted = true; l.hedged = true; l.hedgeWaiting = false; } // hedged: nothing follows the closed root
+        // A human reset after a stop (max-profit trip / EOD): the closed leaves that were never hedged are deliberate chain ends, not lost follow-ups (scheduleLostFollowUp must not revive them).
+        { const parents = new Set(Object.values(this.state.legs).map((l) => l.parentId).filter(Boolean)); for (const l of Object.values(this.state.legs)) if (l.status === 'closed' && !l.hedged && !l.hedgeWaiting && !l.pendingHedge && !parents.has(l.id)) l.hedged = true; }
         if (reopened.length) Log.log(`[SimpleContinuousStrategy] reset: closed root(s) ${reopened.map((l) => l.tsym).join(', ')} re-opened for selection (root gate open, new root allowed)`);
         else if (live.length) Log.log(`[SimpleContinuousStrategy] reset: root gate left as is, ${live.length} live/pending leg(s): ${live.map((l) => l.tsym).join(', ')}`);
         this.save();
