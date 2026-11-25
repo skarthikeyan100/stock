@@ -12,6 +12,7 @@ import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVE
 import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots, pairFillsFifo, netWithShortCover } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
+import { setOwnerHoldingsLookup } from './neverShortClass';
 import { foreignSellExcess, piecesForShortfall } from './foreignSells';
 import { ForeignSellWatch, type WatchReason } from './foreignSellWatch';
 import { antOrderAveragePrices } from '../../ant/tradeBook';
@@ -336,6 +337,26 @@ class OrderBookkeeping {
     // Broker order ids of sells the BROKER itself executed (a GTT target/stop that fired), booked by the GTT poll. Not stored in Mongo. A fill
     // listener (mirror.ts) reads it to tell a broker-side exit, which the matching admin GTT performs by itself, from a sell this platform placed.
     readonly brokerOwnedExitOrderIds = new Set<string>();
+    // Sell order id -> id of the Kite GTT whose trigger placed it (set by the GTT poll before it books the exit). recordFill reads it: a GTT-fired exit
+    // sold ONE lot, so the row's other GTTs (the other lots' exits) stay live while lots remain.
+    readonly gttFiredOrders = new Map<string, number>();
+    // Kite GTT support injected by kiteExecutor (this module cannot import it): the order ids that triggered GTTs of the platform's open rows placed
+    // at the broker (those sells are the platform's own, whether or not the GTT poll has booked them yet), and a poll that books them.
+    private gttSupport?: { exitOrderIds: () => Promise<Set<string>>; poll: () => Promise<void>; bookOrphan: (trade: Trade, gtt: any) => Promise<boolean> };
+    registerGttSupport(s: { exitOrderIds: () => Promise<Set<string>>; poll: () => Promise<void>; bookOrphan: (trade: Trade, gtt: any) => Promise<boolean> }): void { this.gttSupport = s; }
+
+    /** Open quantity the platform holds on one contract of one broker ACCOUNT, split into `userId`'s own rows and every other platform owner's. Rows are
+     *  keyed (broker, contract, owner): two brokers sharing an instrument token, or two owners on one contract name, never share a row. */
+    ownerHoldings(broker: string, tsym: string, userId: string): { own: number; others: number; otherOwners: number } {
+        let own = 0, others = 0; const owners = new Set<string>();
+        for (const t of this.trades) {
+            if ((t.broker ?? 'kite') !== broker || t.tsym !== tsym) continue;
+            const q = Number(t.quantity);
+            if (!(q > 0)) continue;
+            if (t.user === userId) own += q; else { others += q; owners.add(t.user); }
+        }
+        return { own, others, otherOwners: owners.size };
+    }
     private positionsChangedListeners: PositionsChangedListener[] = [];
     private drawdownBreachListeners: DrawdownBreachListener[] = [];
 
@@ -575,7 +596,7 @@ class OrderBookkeeping {
     }
 
     // After a manual buy has booked (every chunk, an add-more) and on restart restore: the merged position's stop is raised, never lowered, to the loss
-    // budget stop for its WHOLE quantity and average cost, re-armed in the exit monitor (a Kite GTT is modified in place). Returns true when it changed.
+    // budget stop for its WHOLE quantity and average cost, re-armed in the exit monitor. A looser broker exit (Kite GTT of an earlier lot, ANT bracket) gets an in-app hard stop at the budget stop (trade.hardStopPrice); kiteExecutor.reprotectToBudget replaces the GTTs. Returns true when it changed.
     tightenStopToLossBudget(userId: string, broker: string, tsym: string): boolean {
         const row = this.trades.find((t) => t.tsym === tsym && t.user === userId && (t.broker ?? 'kite') === broker);
         const budget = this.lossBudgetFor(userId);
@@ -586,10 +607,14 @@ class OrderBookkeeping {
         row.stopLossPrice = need;
         const exchange = exchangeForTsym(tsym);
         const gtt = row.gttTriggerId;
-        // A broker-owned exit (a Kite GTT sized for an earlier lot, an ANT bracket) cannot be re-priced here without risking an oversell: say so.
-        if (gtt != null) Log.log(`[order] ALERT: ${tsym} (${userId}) holds Kite GTT ${gtt} with its earlier, looser stop - the loss budget stop ${need} is recorded but the GTT is the exit; set the stop to ${need} in the positions page`);
-        else if (row.antOrderNo) Log.log(`[order] ALERT: ${tsym} (${userId}) is an ANT bracket position - its broker stop cannot be tightened to the loss budget stop ${need}`);
-        if (row.token && (broker === 'kite' || broker === 'ant' || broker === 'breeze') && !row.antOrderNo) exitMonitor.registerTrade(row, exchange, broker, gtt != null);
+        // A broker-owned exit (a Kite GTT placed for an earlier lot, an ANT bracket) still holds its looser stop. The in-app monitor is armed at
+        // once as a hard backup at the budget stop (exitMonitor honours trade.hardStopPrice even when watch-only); for a Kite GTT the executor then
+        // replaces the broker exit (kiteExecutor.reprotectToBudget) and clears the backup once one GTT at the budget stop covers the position.
+        if (gtt != null || row.antOrderNo) {
+            row.hardStopPrice = need;
+            Log.log(`[order] ALERT: ${tsym} (${userId}) holds ${gtt != null ? `Kite GTT ${gtt}` : 'an ANT bracket'} with its earlier, looser stop - the in-app monitor sells at the loss budget stop ${need} as a hard backup${gtt != null ? ' while the GTT is replaced for the whole position' : ' (the bracket itself cannot be re-priced)'}`);
+        }
+        if (row.token && (broker === 'kite' || broker === 'ant' || broker === 'breeze')) exitMonitor.registerTrade(row, exchange, broker, gtt != null || !!row.antOrderNo);
         this.notifyTargetStopLossChanged();
         return true;
     }
@@ -1621,7 +1646,11 @@ class OrderBookkeeping {
                 buyTrade.quantity -= sellQty;
                 // A Kite GTT bypasses the never-short guard: left live after this exit it could sell a flat (or smaller) account short, and a
                 // GTT sized for the old quantity is wrong for what remains. The GTT's own fill (pollGttFills) clears the id before booking.
-                const gttsToRelease = [buyTrade.gttTriggerId, ...(buyTrade.extraGttTriggerIds ?? [])].filter((id): id is number => id != null);
+                let gttsToRelease = [buyTrade.gttTriggerId, ...(buyTrade.extraGttTriggerIds ?? [])].filter((id): id is number => id != null);
+                // A GTT's own exit (the poll removed the fired id from the row first) sold ONE lot: the row's other GTTs are the other lots' broker
+                // exits and stay live while lots remain (releasing them handed those lots to the in-app monitor, and a fired-but-unbooked one was lost).
+                // Nothing left: whatever is still live must go (it would sell a flat account short).
+                if (tradeEvent.brokerOrderId && this.gttFiredOrders.has(String(tradeEvent.brokerOrderId)) && buyTrade.quantity > 0) gttsToRelease = [];
                 if (gttsToRelease.length > 0) {
                     buyTrade.gttTriggerId = undefined as any;
                     buyTrade.extraGttTriggerIds = undefined;
@@ -1680,7 +1709,16 @@ class OrderBookkeeping {
                 let stillActive = true;
                 try {
                     const live: any[] = await Kite.getInstance().getGTTs();
-                    stillActive = live.some((g) => g.id === gttTriggerId && g.status === 'active');
+                    const g = live.find((x) => x.id === gttTriggerId);
+                    stillActive = !!g && g.status === 'active';
+                    // It FIRED while this other sell was booked (a manual/in-app exit racing the broker's own): its sell is real and the platform's
+                    // own. Booked as such (never left to be read as 'a sell outside the platform'); when nothing is left to book it against, the
+                    // account was sold twice and that is a real inconsistency.
+                    if (g && g.status === 'triggered') {
+                        let booked = false;
+                        try { booked = (await this.gttSupport?.bookOrphan(trade, g)) ?? false; } catch (be) { Log.log(`[order] booking the exit of fired GTT ${gttTriggerId} (${trade.tsym}, ${trade.user}) failed:`, be); }
+                        if (!booked) Log.log(`[order] ALERT: GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) FIRED at the broker while the platform sold the same position (cause class: gtt-and-exit-both-sold) - its sell could not be booked against an open lot; the account may be short`);
+                    }
                 } catch { /* cannot tell: assume it is live */ }
                 if (stillActive) Log.log(`[order] ALERT: GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) could NOT be deleted after a sell and may still be live - delete it by hand in Kite:`, e);
             }
@@ -1791,6 +1829,9 @@ class OrderBookkeeping {
         if (need !== undefined && need > trade.stopLossPrice + 1e-9) {
             Log.log(`[order] loss budget ${Math.round(budget)}: restored stop of ${trade.tsym} (${trade.user}) raised ${trade.stopLossPrice} -> ${need}`);
             trade.stopLossPrice = need;
+            // An ANT bracket keeps the stop it was placed with: the in-app monitor is the hard backup at the budget stop. (A Kite GTT's stop is
+            // read from the broker by the GTT poll, kiteExecutor.checkGttsAgainstBudget.)
+            if (trade.antOrderNo) trade.hardStopPrice = need;
         }
     }
 
@@ -2457,7 +2498,16 @@ class OrderBookkeeping {
         const owners = await loadOrderOwners(Array.from(new Set(wanted.map((f) => f.orderId))));
         const own = opts.isOwnOrder ?? await this.clientOwnOrderTest(broker);
         const extraOwn = this.extraOwnOrderTests.get(broker);
-        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(id) || own(id) || (extraOwn?.(id) ?? false);
+        // A sell that a triggered Kite GTT of one of the platform's own rows placed is the platform's (cause class: gtt-fired). Until the GTT poll books
+        // it the platform does not know the order id, so it is learnt from the GTT book here and the poll is asked to book it - it must never become
+        // 'a sell made outside the platform' (live 2026-11-25 12:30: the second lot's GTT of a merged row).
+        let gttOwn = new Set<string>();
+        if (broker === 'kite' && this.gttSupport) {
+            try { gttOwn = await this.gttSupport.exitOrderIds(); } catch { /* unreadable: the other tests decide */ }
+            const unbooked = Array.from(gttOwn).filter((id) => !this.processedFillIds.has(id));
+            if (unbooked.length > 0) { void this.gttSupport.poll().catch(() => undefined); }
+        }
+        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(id) || own(id) || (extraOwn?.(id) ?? false) || gttOwn.has(id);
         const graceFor = (x: { ts: Trade[] }) => x.ts.some((t) => t.gttTriggerId != null) ? Math.max(opts.graceMs ?? 0, GTT_EXIT_GRACE_MS) : (opts.graceMs ?? 0); // a GTT-triggered exit is booked by the GTT poll: its sell order id is unknown to the platform until then
         return short.map((x) => {
             const maxSellAt = Date.now() - graceFor(x);
@@ -3447,4 +3497,6 @@ class OrderBookkeeping {
     }
 }
 
-export default new OrderBookkeeping();
+const bookkeepingInstance = new OrderBookkeeping();
+setOwnerHoldingsLookup((b, t, u) => bookkeepingInstance.ownerHoldings(b, t, u));
+export default bookkeepingInstance;

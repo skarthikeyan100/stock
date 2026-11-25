@@ -1,3 +1,4 @@
+import { classifyRefusal, ownerSellCap } from './neverShortClass';
 import { Trade } from '../../model/model';
 import Log from '../../util/Log';
 import { sleep } from '../../util/sleep';
@@ -92,6 +93,11 @@ export async function neverShortSellable(args: {
     // One line saying whether a sell made outside the platform explains a 'nothing sellable' refusal (bookkeeping.explainNeverShort). Diagnostic only,
     // bounded to 8 s, never throws.
     explainRefusal?: () => Promise<string>;
+    // Owner awareness (bookkeeping.ownerHoldings): the owner's own open lots in the platform's book and every OTHER platform owner's lots of the same contract on
+    // this broker account. Several strategies/users share one account, whose net position is ONE number: a sell may never take another owner's lots, so
+    // when others hold the contract the sell is capped at this owner's own free lots (ownerSellCap). Undefined = not known / single owner.
+    ownerHeld?: number;
+    othersHeld?: number;
 }): Promise<number> {
     const others = args.otherUsersRestingSellQuantity ?? 0;
     let live: number;
@@ -109,15 +115,18 @@ export async function neverShortSellable(args: {
     }
     if (!Number.isFinite(live)) return args.quantity;
     const sellable = live - args.restingSellQuantity - others;
+    const facts = { requested: args.quantity, live, ownResting: args.restingSellQuantity, othersResting: others, ownHeld: args.ownerHeld, othersHeld: args.othersHeld };
     if (sellable <= 0 && others > 0 && live - args.restingSellQuantity > 0) {
         // Not "nothing sellable" (callers read that text as "this leg's whole quantity already rests"): the quantity is held but another user's
         // resting sells cover it. Retried by the caller with its backoff; it becomes placeable when that order fills or is cancelled.
-        Log.log(`[order] NEVER-SHORT GUARD held back a sell of ${args.quantity} ${args.label}: live=${live}, own resting sells=${args.restingSellQuantity}, other users' resting sells=${others} on the same account`);
+        Log.log(`[order] NEVER-SHORT GUARD held back a sell of ${args.quantity} ${args.label}: live=${live}, own resting sells=${args.restingSellQuantity}, other users' resting sells=${others} on the same account (cause class: other-owner-resting)`);
         throw new Error(`NEVER-SHORT GUARD: ${args.label} - the ${live - args.restingSellQuantity} still held are covered by other users' resting sells (${others}) on this account - refusing to sell ${args.quantity} for now`);
     }
     if (sellable <= 0) {
-        Log.log(`[order] ALERT: NEVER-SHORT GUARD refused a sell of ${args.quantity} ${args.label} - nothing sellable (live=${live}, resting sells=${args.restingSellQuantity}, other users'=${others}); position tracking is out of sync with the broker`);
-        if (args.explainRefusal) {
+        const { cls, real } = classifyRefusal(facts);
+        // A duplicate exit attempt (the owner's own resting sells already cover the broker's lots) is the guard doing its job, not a data fault: no ALERT.
+        Log.log(`[order] ${real ? 'ALERT: ' : ''}NEVER-SHORT GUARD refused a sell of ${args.quantity} ${args.label} - nothing sellable (live=${live}, resting sells=${args.restingSellQuantity}, other users'=${others}, cause class: ${cls})${real ? '; position tracking is out of sync with the broker' : '; the quantity already rests as the owner\'s own sell(s)'}`);
+        if (real && args.explainRefusal) {
             let timer: NodeJS.Timeout | undefined;
             const why = await Promise.race([
                 args.explainRefusal().catch((e: any) => `cause check failed: ${e?.message ?? e}`),
@@ -128,9 +137,17 @@ export async function neverShortSellable(args: {
         }
         throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${args.label} (live=${live}, resting=${args.restingSellQuantity}) - refusing to sell ${args.quantity}`);
     }
-    if (args.quantity > sellable) {
-        Log.log(`[order] ALERT: NEVER-SHORT GUARD clamped a sell of ${args.label} from ${args.quantity} to ${sellable} (live=${live}, own resting=${args.restingSellQuantity}, other users' resting=${others}) - position tracking is out of sync with the broker`);
-        return sellable;
+    let allowed = sellable;
+    let cappedByOwner = false;
+    const cap = ownerSellCap({ own: args.ownerHeld ?? 0, others: args.othersHeld ?? 0 }, args.restingSellQuantity);
+    if (cap !== undefined && cap < allowed) { allowed = cap; cappedByOwner = true; }
+    if (allowed <= 0) {
+        Log.log(`[order] ALERT: NEVER-SHORT GUARD refused a sell of ${args.quantity} ${args.label} - the owner's own lots (${args.ownerHeld}) are all reserved by its resting sells (${args.restingSellQuantity}) and other platform owners hold ${args.othersHeld} of the same contract on this account (cause class: other-owner-lots)`);
+        throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${args.label} (own lots ${args.ownerHeld}, own resting ${args.restingSellQuantity}, other owners' lots ${args.othersHeld}) - refusing to sell ${args.quantity}`);
+    }
+    if (args.quantity > allowed) {
+        Log.log(`[order] ALERT: NEVER-SHORT GUARD clamped a sell of ${args.label} from ${args.quantity} to ${allowed} (live=${live}, own resting=${args.restingSellQuantity}, other users' resting=${others}${cappedByOwner ? `, own lots=${args.ownerHeld}, other owners' lots=${args.othersHeld}` : ''}; cause class: ${cappedByOwner ? 'other-owner-lots' : 'broker-short'}) - position tracking is out of sync with the broker`);
+        return allowed;
     }
     return args.quantity;
 }

@@ -77,7 +77,7 @@ function wrapChunkError(
 // own lot size and freeze limit (neither known here), so it is NOT split: cutting an ADANIGREEN 1800 sell at NIFTY's 1755 made 1755 + 45, and
 // the exchange rejected the first with "quantity should be multiple of 600" (live 2026-11-04, lock-profits). One order either fills or is
 // refused by the exchange with a clear message; a wrong split is always refused.
-function defaultFreezeQty(tradingSymbol: string, exchange: string): number {
+export function defaultFreezeQty(tradingSymbol: string, exchange: string): number {
     if (!isIndexTsym(tradingSymbol)) return Number.MAX_SAFE_INTEGER;
     return exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
 }

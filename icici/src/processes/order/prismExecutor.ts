@@ -1,3 +1,4 @@
+import { ownerFields } from './neverShortClass';
 import Log from '../../util/Log';
 import { cancelThenRecheck, fillStateUnknownError } from '../../util/fillWait';
 import Prism from '../../prism';
@@ -71,7 +72,7 @@ export async function sellContract(userId: string, contract: string, quantity: n
     const token = await prism.getToken(contract);
     const exchange: 'NFO' | 'BFO' = exchangeForTsym(contract);
     // Resting sells were cancelled by squareOffOnPrism, so none count against the live position.
-    quantity = await neverShortSellable({ label: `${contract} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(contract), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('prism', contract) });
+    quantity = await neverShortSellable({ ...ownerFields('prism', contract, userId), label: `${contract} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(contract), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('prism', contract) });
     const { orderId } = await prism.placeLimitSellBare(contract, token, quantity, limitPrice, userId, exchange);
 
     const book = async (qty: number, px: number): Promise<Trade> => {
@@ -392,7 +393,7 @@ async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity:
 // pollPendingPrismLimitOrders. Mirrors placeLimitSellBareOnAnt exactly -
 // BulkPcrStrategy's target-hit exit on Prism.
 export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number }> {
-    quantity = await neverShortSellable({
+    quantity = await neverShortSellable({ ...ownerFields('prism', tradingSymbol, userId),
         label: `${tradingSymbol} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(tradingSymbol),
         restingSellQuantity: prismRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: prismRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
         explainRefusal: () => bookkeeping.explainNeverShort('prism', tradingSymbol),

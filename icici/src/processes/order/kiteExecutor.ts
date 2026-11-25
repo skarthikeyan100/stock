@@ -18,10 +18,11 @@ import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder, beginCancelOfPendingLimitOrders, endCancelOfPendingLimitOrders, silenceListenersOfPendingLimitOrders } from './pendingLimitOrders';
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { exchangeForTsym } from '../../util/underlyings';
-import { loadOrderOwners } from './orderOwners';
+import { loadOrderOwners, recordOrderOwner } from './orderOwners';
 import Mongo from '../../tools/mongo';
 import { registerEntryExit } from './entryExits';
-import { manualBuyChunked, squareOffAutoChunked } from './chunkedOrder';
+import { manualBuyChunked, squareOffAutoChunked, defaultFreezeQty } from './chunkedOrder';
+import type { Trade as TradeRow } from '../../model/model';
 
 // Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -368,7 +369,7 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
         label: 'manualBuyChunked', userId, tradingSymbol, exchange, quantity,
         placeOne: (qty, inAppExit) => buyOneContractOnKite(userId, tradingSymbol, commonToken, qty, exchange, targetPoints, stopLossPoints, inAppExit),
         onBooked: () => exitMonitor.watchAggregate(userId, tradingSymbol, commonToken, exchange, 'kite'),
-        afterBook: () => { bookkeeping.tightenStopToLossBudget(userId, 'kite', tradingSymbol); },
+        afterBook: () => { bookkeeping.tightenStopToLossBudget(userId, 'kite', tradingSymbol); void reprotectAfterBuy(userId, tradingSymbol); },
     });
 }
 
@@ -483,6 +484,17 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
             throw new Error(`squareOffOnKite: no tracked open trade (with a token) found for ${tsym} (${userId}) - cannot price a marketable limit sell without it`);
         }
         const token = existing.token;
+
+        // The row carries broker GTTs: one of them may have FIRED already (its lot is sold at the broker, the poll has not booked it yet). Book those
+        // first, so this exit sells only what is really still held (a duplicate exit on top of a fired GTT is refused by the never-short guard).
+        if (gttIdsOf(existing).length > 0) {
+            try { await pollGttFills(); } catch (e) { Log.log(`[order] squareOffOnKite: GTT settle before the exit of ${tsym} (${userId}) failed:`, (e as any)?.message ?? e); }
+            if (!bookkeeping.trades.includes(existing) || !(existing.quantity > 0)) {
+                Log.log(`[order] squareOffOnKite: ${tsym} (${userId}) was closed by its broker GTT - nothing to sell`);
+                return emptyExitTrade(userId, tsym, 'kite');
+            }
+            quantity = Math.min(quantity, existing.quantity);
+        }
 
         // A resting limit sell for this position (e.g. BulkPcr's target exit) must come off before this
         // market-style sell, or both could fill and oversell. Each is cancelled with a fill recheck; a fill that
@@ -929,6 +941,229 @@ function adoptUntrackedGtts(liveGtts: any[]): void {
         if (matches[0].status === 'active' && t.token) exitMonitor.registerTrade(t, exchangeForTsym(t.tsym), 'kite', true);
     }
 }
+
+// ---- Loss-budget re-protection of a merged position (add-more / several fills) ---------------------------------------------------------
+// A Kite GTT is sized and priced for the lot it was placed with. After an add-more the merged row holds several GTTs (primary id + extraGttTriggerIds)
+// whose stops are looser than the loss budget stop of the WHOLE position (bookkeeping.tightenStopToLossBudget), so the broker exit would fire at a
+// loss above the budget. This replaces them with ONE GTT for the merged quantity at the row's (tightened) stop and its target, without ever leaving
+// two live exits for the same quantity: every old GTT is deleted and confirmed gone at the broker's GTT book BEFORE the new one is placed; until the
+// new GTT is live the in-app exit monitor is the exit (hard stop at the budget stop, row.hardStopPrice); if an old GTT cannot be cancelled it is kept
+// (nothing new is placed) and the in-app hard stop stays armed. A GTT that triggered meanwhile is left to the GTT-fill poll (never replaced).
+const reprotectRuns = new Map<string, { again: boolean }>();
+const reprotectCooldown = new Map<string, number>();
+const REPROTECT_BACKOFF_MS = [1000, 3000, 8000];
+const REPROTECT_COOLDOWN_MS = 5 * 60_000;
+export const reprotectDelay = { sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) }; // tests replace it
+
+export function gttIdsOf(t: TradeRow): number[] {
+    return [t.gttTriggerId, ...(t.extraGttTriggerIds ?? [])].filter((id): id is number => id != null);
+}
+function gttStopOf(g: any): number | undefined {
+    const tv = (g?.condition?.trigger_values ?? []).map(Number).filter((x: number) => Number.isFinite(x));
+    return tv.length === 2 ? Math.min(...tv) : undefined;
+}
+
+// 'ok': the live GTTs cover exactly the row's quantity, none with a stop looser than the row's. 'mismatch': they do not. 'unknown': an id is missing
+// from the book or not active (triggered / dead): the GTT-fill poll owns that, nothing is replaced here.
+export function gttCoverage(row: TradeRow, live: any[]): 'ok' | 'mismatch' | 'unknown' {
+    const ids = gttIdsOf(row);
+    if (ids.length === 0 || row.stopLossPrice == null) return 'unknown';
+    const byId = new Map<any, any>(live.map((g: any) => [g.id, g]));
+    let qty = 0;
+    let loose = false;
+    for (const id of ids) {
+        const g = byId.get(id);
+        if (!g || g.status !== 'active') return 'unknown';
+        qty += Number(g.orders?.[0]?.quantity) || 0;
+        const stop = gttStopOf(g);
+        if (stop === undefined || stop < row.stopLossPrice - 0.05 - 1e-9) loose = true;
+    }
+    return loose || qty !== row.quantity ? 'mismatch' : 'ok';
+}
+
+// Forgets GTT ids that are confirmed gone at the broker: on the row and on the persisted Buy documents (a restart must not restore them).
+export async function forgetGttIds(trade: TradeRow, gone: number[]): Promise<void> {
+    if (gone.length === 0) return;
+    if (trade.gttTriggerId != null && gone.includes(trade.gttTriggerId)) trade.gttTriggerId = undefined as any;
+    const remaining = (trade.extraGttTriggerIds ?? []).filter((x) => !gone.includes(x));
+    trade.extraGttTriggerIds = remaining.length > 0 ? remaining : undefined;
+    // Promote an extra to primary so the row's single id field keeps pointing at a live GTT.
+    if (trade.gttTriggerId == null && trade.extraGttTriggerIds?.length) {
+        trade.gttTriggerId = trade.extraGttTriggerIds[0];
+        const rest = trade.extraGttTriggerIds.slice(1);
+        trade.extraGttTriggerIds = rest.length > 0 ? rest : undefined;
+    }
+    try {
+        await Mongo.getInstance()?.db.collection('Trade').updateMany({ tsym: trade.tsym, user: trade.user, action: 'Buy', gttTriggerId: { $in: gone } }, { $unset: { gttTriggerId: '' } });
+    } catch (e) { Log.log(`[order] could not clear the stored GTT id(s) ${gone.join(',')} of ${trade.tsym} (${trade.user}):`, e); }
+}
+
+function armHardStop(row: TradeRow): void {
+    if (row.stopLossPrice == null || !row.token) return;
+    if (row.hardStopPrice == null || row.hardStopPrice < row.stopLossPrice) row.hardStopPrice = row.stopLossPrice;
+    exitMonitor.registerTrade(row, exchangeForTsym(row.tsym), 'kite', gttIdsOf(row).length > 0);
+}
+
+const rowOfKite = (userId: string, tsym: string): TradeRow | undefined => bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && (t.broker ?? 'kite') === 'kite');
+
+// Run after a manual buy has booked: only a row that shows merge evidence (several GTT ids, or the budget stop was just raised over a live GTT).
+async function reprotectAfterBuy(userId: string, tsym: string): Promise<void> {
+    const row = rowOfKite(userId, tsym);
+    if (!row) return;
+    const ids = gttIdsOf(row);
+    if (ids.length === 0 || (ids.length === 1 && row.hardStopPrice == null)) return;
+    await reprotectToBudget(userId, tsym);
+}
+
+export async function reprotectToBudget(userId: string, tsym: string): Promise<void> {
+    const key = `${userId}:${tsym}`;
+    const running = reprotectRuns.get(key);
+    if (running) { running.again = true; return; } // an add-more landed mid-run: the running pass loops once more
+    const state = { again: false };
+    reprotectRuns.set(key, state);
+    try {
+        for (let round = 0; round < 3; round++) {
+            state.again = false;
+            await reprotectOnce(userId, tsym, state);
+            if (!state.again) break;
+        }
+    } catch (e) {
+        Log.log(`[order] ALERT: re-protecting ${tsym} (${userId}) to the loss budget failed - the in-app hard stop stays armed:`, e);
+    } finally {
+        reprotectRuns.delete(key);
+    }
+}
+
+async function reprotectOnce(userId: string, tsym: string, state: { again: boolean }): Promise<void> {
+    const row = rowOfKite(userId, tsym);
+    if (!row || row.strategy || !row.token || bookkeeping.lossBudgetFor(userId) === undefined) return;
+    const ids = gttIdsOf(row);
+    if (ids.length === 0 || !(Number(row.stopLossPrice) > 0) || row.targetPrice == null) return;
+    const kite = Kite.getInstance();
+    const exchange = exchangeForTsym(tsym);
+    let live: any[];
+    try { live = await kite.getGTTs(); } catch (e) {
+        Log.log(`[order] ALERT: GTT book of ${tsym} (${userId}) unreadable - the loss budget stop ${row.stopLossPrice} is enforced by the in-app hard stop until it can be re-protected:`, e);
+        armHardStop(row);
+        return;
+    }
+    const cover = gttCoverage(row, live);
+    if (cover === 'ok') { row.hardStopPrice = undefined; return; }
+    if (cover === 'unknown') {
+        Log.log(`[order] re-protect ${tsym} (${userId}): a GTT is triggered / missing / dead - left to the GTT poll`);
+        void pollGttFills();
+        return;
+    }
+    armHardStop(row); // exposure first: the in-app monitor sells at the budget stop while the GTTs are replaced
+
+    // 1. cancel every old GTT; confirm a failed cancel against the broker's book before believing it
+    let pending = ids.slice();
+    const gone: number[] = [];
+    for (let attempt = 0; attempt <= REPROTECT_BACKOFF_MS.length && pending.length > 0; attempt++) {
+        if (attempt > 0) await reprotectDelay.sleep(REPROTECT_BACKOFF_MS[attempt - 1]);
+        const failed: number[] = [];
+        for (const id of pending) {
+            try { await kite.deleteGTT(id); gone.push(id); }
+            catch (e) { if (isGttGoneError(e)) gone.push(id); else failed.push(id); }
+        }
+        pending = failed;
+        if (failed.length > 0) {
+            let book: any[] | undefined;
+            try { book = await kite.getGTTs(); } catch { book = undefined; }
+            if (book) {
+                const byId = new Map<any, any>(book.map((g: any) => [g.id, g]));
+                if (failed.some((id) => byId.get(id)?.status === 'triggered')) {
+                    await forgetGttIds(row, gone);
+                    Log.log(`[order] re-protect ${tsym} (${userId}): a GTT triggered while it was being replaced - left to the GTT poll, no new GTT placed`);
+                    void pollGttFills();
+                    return;
+                }
+                // Still active in the book = still live; absent / cancelled / deleted = not live.
+                pending = failed.filter((id) => byId.get(id)?.status === 'active');
+                for (const id of failed) if (!pending.includes(id)) gone.push(id);
+            }
+        }
+    }
+    await forgetGttIds(row, gone);
+    if (pending.length > 0) {
+        Log.log(`[order] ALERT: GTT(s) ${pending.join(',')} of ${tsym} (${userId}) could not be cancelled - kept (no second GTT placed); the in-app hard stop at ${row.hardStopPrice} sells the position at the loss budget stop`);
+        armHardStop(row);
+        return;
+    }
+
+    // 2. no live GTT left: the in-app monitor is the exit until the new GTT is live
+    exitMonitor.registerTrade(row, exchange, 'kite', false);
+    const place = async (): Promise<void> => {
+        if (!bookkeeping.trades.includes(row)) return; // sold meanwhile
+        const qty = row.quantity;
+        if (qty > defaultFreezeQty(tsym, exchange)) {
+            row.hardStopPrice = undefined;
+            Log.log(`[order] ${tsym} (${userId}) qty ${qty} exceeds one freeze order: no GTT - the in-app exit monitor owns the exit at stop ${row.stopLossPrice} / target ${row.targetPrice}`);
+            return;
+        }
+        for (let attempt = 0; attempt <= REPROTECT_BACKOFF_MS.length; attempt++) {
+            if (attempt > 0) await reprotectDelay.sleep(REPROTECT_BACKOFF_MS[attempt - 1]);
+            if (!bookkeeping.trades.includes(row)) return;
+            if (row.quantity !== qty) { state.again = true; return; } // another add-more booked: the next round re-sizes it
+            if (bookkeeping.pendingSquareOffs.has(`kite:${userId}:${tsym}`)) { Log.log(`[order] re-protect ${tsym} (${userId}): a sell is in progress - no GTT placed`); return; }
+            const stop = row.stopLossPrice as number;
+            const target = row.targetPrice as number;
+            const last = row.lastTradePrice > 0 ? row.lastTradePrice : row.price;
+            if (!(stop > 0) || !(stop < last) || !(last < target)) {
+                row.hardStopPrice = undefined;
+                Log.log(`[order] ALERT: no GTT can be placed for ${tsym} (${userId}): need 0 < stop ${stop} < last ${last} < target ${target} - the in-app exit monitor owns the exit`);
+                return;
+            }
+            let id: number;
+            try {
+                id = await kite.placeTargetStopLossGTT(tsym, exchange, qty, stop, target - stop, 0, last);
+            } catch (e) {
+                Log.log(`[order] ALERT: replacement GTT for ${tsym} (${userId}) qty ${qty} failed (attempt ${attempt + 1}/${REPROTECT_BACKOFF_MS.length + 1}):`, (e as any)?.message ?? e);
+                continue;
+            }
+            if (!bookkeeping.trades.includes(row) || row.quantity !== qty) {
+                // The position was sold / grown while the GTT was being placed: that GTT must not stay live next to the in-app exit.
+                try { await kite.deleteGTT(id); Log.log(`[order] replacement GTT ${id} of ${tsym} (${userId}) deleted - the position changed while it was placed`); }
+                catch (e) { Log.log(`[order] ALERT: replacement GTT ${id} of ${tsym} (${userId}) is stale and could NOT be deleted - delete it by hand in Kite:`, e); }
+                if (bookkeeping.trades.includes(row)) state.again = true;
+                return;
+            }
+            row.gttTriggerId = id;
+            row.extraGttTriggerIds = undefined;
+            row.hardStopPrice = undefined;
+            persistGttTriggerId(row);
+            exitMonitor.registerTrade(row, exchange, 'kite', true);
+            bookkeeping.notifyTargetStopLossChanged();
+            Log.log(`[order] re-protected ${tsym} (${userId}): ONE GTT ${id} for the merged qty ${qty}, stop ${stop} target ${target}`);
+            return;
+        }
+        row.hardStopPrice = undefined;
+        Log.log(`[order] ALERT: ${tsym} (${userId}) has NO GTT after ${REPROTECT_BACKOFF_MS.length + 1} attempts - the in-app exit monitor owns the exit at stop ${row.stopLossPrice} / target ${row.targetPrice}`);
+    };
+    await place();
+}
+
+export function isGttGoneError(e: any): boolean {
+    if (!e) return false;
+    if (e.status === 404 || e.response?.status === 404) return true;
+    return /not found|does not exist|no such trigger/i.test(String(e.message ?? e));
+}
+
+// Run from the GTT poll with the broker's GTT list it already read: a position whose live GTTs are looser than its stop or cover another quantity
+// (restart after a merge, a lot whose own GTT failed) is re-protected. Per position, at most once per 5 minutes.
+function checkGttsAgainstBudget(live: any[]): void {
+    for (const row of bookkeeping.trades) {
+        if ((row.broker ?? 'kite') !== 'kite' || row.strategy || !row.token || gttIdsOf(row).length === 0) continue;
+        if (bookkeeping.lossBudgetFor(row.user) === undefined) continue;
+        const key = `${row.user}:${row.tsym}`;
+        if (reprotectRuns.has(key) || gttCoverage(row, live) !== 'mismatch') continue;
+        if (Date.now() - (reprotectCooldown.get(key) ?? 0) < REPROTECT_COOLDOWN_MS) continue;
+        reprotectCooldown.set(key, Date.now());
+        Log.log(`[order] GTT poll: GTT(s) of ${row.tsym} (${row.user}) do not match its quantity ${row.quantity} / stop ${row.stopLossPrice} - re-protecting`);
+        void reprotectToBudget(row.user, row.tsym);
+    }
+}
+
 // Consecutive polls in which a trade's GTT was absent from the broker's list.
 const gttMissCount = new Map<string, number>();
 const GTT_MISSING_FALLBACK_POLLS = 3;
@@ -953,11 +1188,30 @@ async function pollGttFillsOnce(): Promise<void> {
     const liveGtts: any[] = await kite.getGTTs();
     adoptUntrackedGtts(liveGtts);
     gttAdoptNow.clear();
-    const openGttTrades = bookkeeping.trades.filter((t) => t.gttTriggerId != null);
+    checkGttsAgainstBudget(liveGtts);
+    const openGttTrades = bookkeeping.trades.filter((t) => gttIdsOf(t).length > 0);
     if (openGttTrades.length === 0) return;
     const byId = new Map<any, any>(liveGtts.map((g: any) => [g.id, g]));
+    let orderBook: any[] | undefined; // read once per poll, only when a GTT has triggered
+    const readOrders = async (): Promise<any[]> => (orderBook ??= await kite.getKiteConnect().getOrders());
 
     for (const trade of openGttTrades) {
+        // The GTTs of LATER buys merged into this row (extraGttTriggerIds) are broker exits as well: each fires on its own and sells its own lot.
+        // They used to be looked at by nobody, so a fired extra's sell stayed unbooked, showed up as a 'sell outside the platform' and left the
+        // leg open at a quantity the broker no longer held (live 2026-11-25 12:29:40 GTT 346265018 fired, 12:30:19 the exit monitor then tried to
+        // sell the same 520 again: NEVER-SHORT refusal). Every id of the row is resolved here.
+        for (const extraId of (trade.extraGttTriggerIds ?? []).slice()) {
+            const eg = byId.get(extraId);
+            if (!eg) continue; // absent from the list: left as is (the primary's missing-poll fallback owns the row's recovery)
+            if (eg.status === 'triggered') {
+                try { await bookFiredGtt(trade, eg, readOrders); } catch (e) { Log.log('[order] GTT poll: failed to resolve exit of extra GTT', extraId, 'for', trade.tsym, e); }
+            } else if (GTT_DEAD_STATUSES.has(eg.status)) {
+                Log.log(`[order] ALERT: extra GTT ${extraId} for ${trade.tsym} (${trade.user}) is '${eg.status}', not triggered - that lot has no broker exit; dropping the reference`);
+                trade.extraGttTriggerIds = (trade.extraGttTriggerIds ?? []).filter((x) => x !== extraId);
+                if (trade.extraGttTriggerIds.length === 0) trade.extraGttTriggerIds = undefined;
+            }
+        }
+        if (!bookkeeping.trades.includes(trade) || trade.gttTriggerId == null) continue;
         const gtt = byId.get(trade.gttTriggerId);
         if (!gtt) {
             const missKey = String(trade.gttTriggerId);
@@ -992,56 +1246,84 @@ async function pollGttFillsOnce(): Promise<void> {
         if (gtt.status !== 'triggered') continue; // unknown status: act only on a confirmed trigger
 
         try {
-            const orders = await kite.getKiteConnect().getOrders();
-            const entryMs = trade.entryTime ? new Date(trade.entryTime).getTime() : 0;
-            // THIS GTT's own exit order: Kite reports it on the triggered GTT (orders[].result.order_result.order_id). Picking "the newest
-            // completed sell of the contract" instead booked the SAME order for two users holding the same contract (a mirror pair, both GTTs
-            // firing together): the second booking was dropped as a redelivered fill and that leg stayed open (live 2026-11-12 10:50).
-            const gttOrderIds = new Set<string>((gtt.orders ?? []).map((x: any) => x?.result?.order_result?.order_id).filter((x: any) => x != null && x !== '').map(String));
-            const completedSells = (orders as any[]).filter((o: any) => o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' && new Date(o.order_timestamp).getTime() >= entryMs);
-            let sellFill: any;
-            if (gttOrderIds.size > 0) {
-                sellFill = completedSells.find((o: any) => gttOrderIds.has(String(o.order_id)));
-            } else {
-                // The GTT did not name its order: only a sell no other leg has claimed, nearest this leg's own target/stop price.
-                const free = completedSells.filter((o: any) => !bookkeeping.isFillProcessed(String(o.order_id)));
-                const ref = [trade.targetPrice, trade.stopLossPrice].filter((x) => x != null) as number[];
-                const dist = (o: any) => ref.length ? Math.min(...ref.map((r) => Math.abs(Number(o.average_price) - r))) : 0;
-                sellFill = free.sort((a: any, b: any) => dist(a) - dist(b))[0];
-            }
-            if (!sellFill) {
-                // Triggered but the exit order isn't COMPLETE yet (or not visible): retry next poll rather than
-                // booking a guessed exit.
-                Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) GTT triggered but no completed sell order yet - will retry`);
-                continue;
-            }
-
-            const sellTrade = new Trade();
-            sellTrade.tsym = trade.tsym;
-            sellTrade.token = trade.token;
-            sellTrade.quantity = Math.min(trade.quantity, Number(sellFill.filled_quantity) > 0 ? Number(sellFill.filled_quantity) : trade.quantity);
-            sellTrade.price = sellFill.average_price;
-            sellTrade.action = 'Sell';
-            sellTrade.status = 'COMPLETE';
-            sellTrade.user = trade.user;
-            sellTrade.broker = 'kite';
-            sellTrade.brokerOrderId = sellFill.order_id; // dedupes against reconcileManualSells seeing the same order
-
-            // The GTT itself sold: clear the id first so booking this sell does not try to delete the trigger that just fired.
-            const firedId = trade.gttTriggerId;
-            trade.gttTriggerId = undefined;
-            if (sellTrade.brokerOrderId) bookkeeping.brokerOwnedExitOrderIds.add(String(sellTrade.brokerOrderId));
-            try {
-                await bookkeeping.recordFill(sellTrade);
-            } catch (e) {
-                trade.gttTriggerId = firedId;
-                throw e;
-            }
-            Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) closed, recorded exit at ${sellTrade.price}`);
+            await bookFiredGtt(trade, gtt, readOrders);
         } catch (e) {
             Log.log('[order] GTT poll: failed to resolve exit for', trade.tsym, e);
         }
     }
+}
+
+// Books the exit order of ONE triggered GTT of `trade` (primary or an extra id) as a platform sell: the order is found by the GTT's own result
+// (orders[].result.order_result.order_id), the GTT id is taken off the row before booking (so booking does not try to delete the trigger that just
+// fired), and the order is registered as the platform's own (brokerOwnedExitOrderIds + bookkeeping.gttFiredOrders) so it can never be read as a sell
+// made outside the platform. Returns true when a sell was booked.
+export async function bookFiredGtt(trade: TradeRow, gtt: any, readOrders: () => Promise<any[]>, orphan = false): Promise<boolean> {
+    const firedId = gtt.id as number;
+    // `orphan`: the id is already off the row (a sell booked elsewhere released the row's GTTs while this one had fired): book its sell against what is left.
+    if (!orphan && !gttIdsOf(trade).includes(firedId)) return false;
+    const orders = await readOrders();
+    const entryMs = trade.entryTime ? new Date(trade.entryTime).getTime() : 0;
+    // THIS GTT's own exit order: Kite reports it on the triggered GTT (orders[].result.order_result.order_id). Picking "the newest
+    // completed sell of the contract" instead booked the SAME order for two users holding the same contract (a mirror pair, both GTTs
+    // firing together): the second booking was dropped as a redelivered fill and that leg stayed open (live 2026-11-12 10:50).
+    const gttOrderIds = new Set<string>((gtt.orders ?? []).map((x: any) => x?.result?.order_result?.order_id).filter((x: any) => x != null && x !== '').map(String));
+    const completedSells = (orders as any[]).filter((o: any) => o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' && new Date(o.order_timestamp).getTime() >= entryMs);
+    let sellFill: any;
+    if (gttOrderIds.size > 0) {
+        sellFill = completedSells.find((o: any) => gttOrderIds.has(String(o.order_id)));
+    } else {
+        // The GTT did not name its order: only a sell no other leg has claimed, nearest this leg's own target/stop price.
+        const free = completedSells.filter((o: any) => !bookkeeping.isFillProcessed(String(o.order_id)));
+        const ref = [trade.targetPrice, trade.stopLossPrice].filter((x) => x != null) as number[];
+        const dist = (o: any) => ref.length ? Math.min(...ref.map((r) => Math.abs(Number(o.average_price) - r))) : 0;
+        sellFill = free.sort((a: any, b: any) => dist(a) - dist(b))[0];
+    }
+    if (!sellFill) {
+        // Triggered but the exit order isn't COMPLETE yet (or not visible): retry next poll rather than
+        // booking a guessed exit.
+        Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) GTT ${firedId} triggered but no completed sell order yet - will retry`);
+        return false;
+    }
+    if (orphan && !(trade.quantity > 0)) {
+        // Nothing open to book it against: the account was sold twice (the caller ALERTs). The order is still the platform's own: remember it so no
+        // check calls it a sell made outside the platform.
+        const id = String(sellFill.order_id);
+        bookkeeping.brokerOwnedExitOrderIds.add(id); bookkeeping.gttFiredOrders.set(id, firedId);
+        recordOrderOwner(id, trade.user, 'kite', {});
+        return false;
+    }
+    const sellTrade = new Trade();
+    sellTrade.tsym = trade.tsym;
+    sellTrade.token = trade.token;
+    sellTrade.quantity = Math.min(trade.quantity, Number(sellFill.filled_quantity) > 0 ? Number(sellFill.filled_quantity) : trade.quantity);
+    sellTrade.price = sellFill.average_price;
+    sellTrade.action = 'Sell';
+    sellTrade.status = 'COMPLETE';
+    sellTrade.user = trade.user;
+    sellTrade.broker = 'kite';
+    sellTrade.brokerOrderId = sellFill.order_id; // dedupes against reconcileManualSells seeing the same order
+
+    // The GTT itself sold: take its id off the row first (an extra just leaves the list; a primary hands the row's single id field to the next one).
+    const before = { primary: trade.gttTriggerId, extras: trade.extraGttTriggerIds ? trade.extraGttTriggerIds.slice() : undefined };
+    if (orphan) { /* already off the row */ } else if (trade.gttTriggerId === firedId) {
+        const rest = (trade.extraGttTriggerIds ?? []).slice();
+        trade.gttTriggerId = rest.length > 0 ? rest.shift()! : undefined as any;
+        trade.extraGttTriggerIds = rest.length > 0 ? rest : undefined;
+    } else {
+        const rest = (trade.extraGttTriggerIds ?? []).filter((x) => x !== firedId);
+        trade.extraGttTriggerIds = rest.length > 0 ? rest : undefined;
+    }
+    const orderId = String(sellTrade.brokerOrderId);
+    if (sellTrade.brokerOrderId) { bookkeeping.brokerOwnedExitOrderIds.add(orderId); bookkeeping.gttFiredOrders.set(orderId, firedId); }
+    try {
+        await bookkeeping.recordFill(sellTrade);
+    } catch (e) {
+        trade.gttTriggerId = before.primary as any;
+        trade.extraGttTriggerIds = before.extras;
+        throw e;
+    }
+    Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) closed${trade.quantity > 0 ? ` ${sellTrade.quantity} (${trade.quantity} still held, covered by ${gttIdsOf(trade).length} other GTT(s))` : ''}, recorded exit at ${sellTrade.price} (GTT ${firedId}, order ${orderId})`);
+    return true;
 }
 
 // Detects a sell placed OUTSIDE this app - e.g. the user manually squared off
@@ -1073,6 +1355,22 @@ export async function reconcileManualSells(): Promise<void> {
 // price and distorted its P&L. All that remains is a log ALERT, once per order, when a foreign sell touches a contract a tracked leg
 // holds - the strategy's own view of that leg may then be stale.
 Kite.neverShortRepair = (tsym) => bookkeeping.requestNeverShortRepair('kite', tsym);
+bookkeeping.registerGttSupport({
+    // Order ids of sells that TRIGGERED GTTs of the platform's open rows placed (primary or extra id): the platform's own sells, booked or not yet.
+    exitOrderIds: async () => {
+        const ids = new Set<number>();
+        for (const t of bookkeeping.trades) if ((t.broker ?? 'kite') === 'kite') for (const id of gttIdsOf(t)) ids.add(id);
+        const out = new Set<string>();
+        if (ids.size === 0) return out;
+        for (const g of await Kite.getInstance().getGTTs()) {
+            if (!ids.has(g?.id) || g.status !== 'triggered') continue;
+            for (const o of g.orders ?? []) { const oid = o?.result?.order_result?.order_id; if (oid != null && oid !== '') out.add(String(oid)); }
+        }
+        return out;
+    },
+    poll: () => pollGttFills(),
+    bookOrphan: (t, g) => bookFiredGtt(t as TradeRow, g, async () => (await Kite.getInstance().getKiteConnect().getOrders()) as any[], true),
+});
 bookkeeping.registerOwnOrderTest('kite', (id) => isTrackedPendingOrder(id));
 Kite.neverShortExplainer = (tsym) => bookkeeping.explainNeverShort('kite', tsym, (id) => Kite.getInstance().isOwnOrder(id) || isTrackedPendingOrder(id));
 const FOREIGN_SELL_GRACE_MS = 2 * 60_000; // a GTT-triggered exit is booked by pollGttFills shortly after it fills; give that time to claim it

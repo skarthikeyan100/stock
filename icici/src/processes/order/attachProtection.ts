@@ -5,7 +5,7 @@ import { roundToTick } from '../../util/tick';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { exchangeForTsym } from '../../util/underlyings';
-import { persistGttTriggerId } from './kiteExecutor';
+import { persistGttTriggerId, isGttGoneError } from './kiteExecutor';
 import type { BrokerName } from '../../util/brokerName';
 
 // Attaches an absolute target / stop-loss to a position that is ALREADY open (a filled limit buy), unlike finalizeEntry which runs
@@ -64,11 +64,7 @@ export async function attachProtection(
 // missing trigger, or statusText 'Not Found' with error_type NetworkException when the 404 has no JSON body. Network failures ('No response
 // from server...'), 429, auth and 5xx messages never match, so they still count as a failed delete. The exact broker wording for an already
 // triggered/removed GTT is not verified against a live response: the match is deliberately limited to "not found"-style messages.
-export function isGttGone(e: any): boolean {
-    if (!e) return false;
-    if (e.status === 404 || e.response?.status === 404) return true;
-    return /not found|does not exist|no such trigger/i.test(String(e.message ?? e));
-}
+export const isGttGone = (e: any): boolean => isGttGoneError(e);
 
 // Removes whatever attachProtection armed on a position (the Kite GTT, the in-app exitMonitor watch) so the caller can close it
 // by hand without a trigger firing later against a flat account. Idempotent; a GTT delete failure throws (the trigger may be live).

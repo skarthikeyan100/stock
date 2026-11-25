@@ -1,3 +1,4 @@
+import { ownerFields } from './neverShortClass';
 import type { MirrorHook } from './mirror';
 import Log from '../../util/Log';
 import { getSpotLtp } from './spotQuote';
@@ -753,7 +754,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 // comment for why (2026-09-22 incident).
 export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', product?: 'INTRADAY' | 'LONGTERM'): Promise<{ orderId: string; quantity: number }> {
     const ant = ANT.getInstance();
-    quantity = await neverShortSellable({
+    quantity = await neverShortSellable({ ...ownerFields('ant', tradingSymbol, userId),
         label: `${tradingSymbol} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
         restingSellQuantity: antRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: antRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
         explainRefusal: () => bookkeeping.explainNeverShort('ant', tradingSymbol, (id) => ant.isOwnOrder(id) || isPendingAntOrder(id)),
@@ -1161,7 +1162,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
                 throw new Error(`Square-off for ${tsym}: no live quote and no trigger price - exit NOT placed, manual action required`);
             }
             // Resting sells were cancelled above, so none count against the live position.
-            quantity = await neverShortSellable({ label: `${tsym} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('ant', tsym) });
+            quantity = await neverShortSellable({ ...ownerFields('ant', tsym, userId), label: `${tsym} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('ant', tsym) });
             let orderNo: string;
             try {
                 ({ orderNo } = await ant.placeOrder({

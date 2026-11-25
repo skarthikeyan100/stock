@@ -310,11 +310,16 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
 
         // Watch-only: keep lastTradePrice fresh for the frontend's live P&L, but
         // the broker's own GTT/bracket owns the actual exit - never square off here.
-        if (watchOnly) continue;
+        // Exception: a loss-budget hard stop (trade.hardStopPrice, bookkeeping.tightenStopToLossBudget): the broker's own exit of a merged
+        // position is looser than the budget stop, so the in-app monitor sells at the budget stop. The broker exit is then released by the
+        // booked sell (a GTT) / closed with the bracket (ANT); the executors' never-short guard stops a second sell of the same quantity.
+        const hardStop = aggregate?.hardStopPrice ?? trade.hardStopPrice;
+        const hardHit = hardStop != null && quote.ltp <= hardStop;
+        if (watchOnly && !hardHit) continue;
         // A trade that carries a broker exit (a Kite GTT id) is broker-owned whatever flag this entry was registered with: a restart
         // restores the row before its GTT id is known and registers it active (live 2026-11-12: the stop then fired at the broker AND
         // here). Never run a competing squareoff for it; the GTT-fill poll books the broker's exit.
-        if (trade.gttTriggerId != null || aggregate?.gttTriggerId != null) {
+        if (!hardHit && (trade.gttTriggerId != null || aggregate?.gttTriggerId != null)) {
             entry.watchOnly = true;
             Log.log(`[order] exitMonitor: ${trade.tsym} (${trade.user}, ${broker}) has broker GTT ${trade.gttTriggerId ?? aggregate?.gttTriggerId} - switching to watch-only, no self squareoff`);
             continue;
@@ -331,7 +336,7 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
         if (gate && now < gate.nextAt) continue; // a failed squareoff is waiting out its backoff
 
         const hitTarget = trade.targetPrice != null && quote.ltp >= trade.targetPrice;
-        const hitStopLoss = trade.stopLossPrice != null && quote.ltp <= trade.stopLossPrice;
+        const hitStopLoss = hardHit || (trade.stopLossPrice != null && quote.ltp <= trade.stopLossPrice);
         if (!hitTarget && !hitStopLoss) continue;
 
         // Unregister before awaiting the exit so a second tick arriving while the
@@ -339,7 +344,7 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
         // fails below, this entry is re-registered in the catch block so a
         // future tick can retry it - see the comment there (bug-04).
         unregisterTradeInternal(trade.user, trade.token, broker, true);
-        Log.log(`[order] exitMonitor triggering squareoff for ${trade.tsym} (${trade.user}, ${broker}): ltp=${quote.ltp} hit=${hitTarget ? 'target' : 'stopLoss'}`);
+        Log.log(`[order] exitMonitor triggering squareoff for ${trade.tsym} (${trade.user}, ${broker}): ltp=${quote.ltp} hit=${hitTarget ? 'target' : hardHit ? 'loss-budget hard stop ' + hardStop : 'stopLoss'}`);
 
         const exitHandler = exitHandlers.get(broker);
         if (!exitHandler) {

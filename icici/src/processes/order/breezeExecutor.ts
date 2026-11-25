@@ -1,3 +1,4 @@
+import { ownerFields } from './neverShortClass';
 import Log from '../../util/Log';
 import Breeze from '../../breeze/Breeze';
 import ANT from '../../ant/ANT';
@@ -475,7 +476,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
             return emptyExitTrade(userId, tsym, 'breeze');
         }
         // Resting sells were cancelled above, so none count against the live position.
-        let remainingQty = await neverShortSellable({ label: `${tsym} (${userId}, Breeze)`, quantity: settled.quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('breeze', tsym) });
+        let remainingQty = await neverShortSellable({ ...ownerFields('breeze', tsym, userId), label: `${tsym} (${userId}, Breeze)`, quantity: settled.quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('breeze', tsym) });
         let bookingFailure: unknown; // a confirmed fill that could not be booked - reported, never retried with a fresh sell
         // Why the retry loop stopped early (one variable, so the two reasons cannot drift apart):
         //  'resting-order' - an order we could neither cancel nor confirm closed: it may still be resting at the broker
@@ -962,7 +963,7 @@ export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: 
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const contract = await resolveBreezeContract(tradingSymbol, antToken);
-    quantity = await neverShortSellable({
+    quantity = await neverShortSellable({ ...ownerFields('breeze', tradingSymbol, userId),
         label: `${tradingSymbol} (${userId}, Breeze)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
         restingSellQuantity: breezeRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: breezeRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
         explainRefusal: () => bookkeeping.explainNeverShort('breeze', tradingSymbol),
