@@ -13,7 +13,7 @@ let failed = false;
 function assert(c: boolean, m: string) { console.log(`  ${c ? 'PASS' : 'FAIL'}: ${m}`); if (!c) failed = true; }
 
 const docs: any[] = [];
-const matches = (d: any, f: any) => Object.keys(f).every((k) => (f[k] && f[k].$in ? f[k].$in.some((v: any) => (v == null ? d[k] == null : d[k] === v)) : d[k] === f[k]));
+import { matches } from './fakeMongoMatch';
 const fakeDb = {
     collection: (name: string) => ({
         find: (f: any) => { const c: any = { sort: () => c, toArray: async () => (name === 'Trade' ? docs.filter((d) => matches(d, f ?? {})) : []), project: () => c }; return c; },

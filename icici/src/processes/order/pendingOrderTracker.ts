@@ -134,7 +134,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     untrack = (orderId: string): void => {
         // Cancelled/rejected resting buys never fill, so nothing else would free the reservation they took (no-op after a fill).
-        bookkeeping.releaseReservationForOrder(orderId);
+        bookkeeping.releaseReservationForOrder(orderId, this.adapter.broker);
         this.pending.delete(orderId);
         this.noPriceAlerted.delete(orderId);
         this.silenced.delete(orderId);

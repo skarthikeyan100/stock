@@ -1,5 +1,6 @@
 import Log from '../../util/Log';
 import Mongo from '../../tools/mongo';
+import { orderKey, noteOrderId, ORDER_KEY_FIELD } from '../../util/orderKey';
 
 /**
  * Order-owner ledger: (broker, broker order id) -> the app user that placed it. Written when an order is placed/tracked (before it can
@@ -11,7 +12,7 @@ import Mongo from '../../tools/mongo';
  * before the scoping may carry no `broker` field (legacy): such a row still answers for any broker, a row WITH a broker answers only for it.
  */
 const COLLECTION = 'orderOwners';
-const key = (broker: string, id: string) => `${broker}|${id}`;
+const key = (broker: string, id: string) => orderKey(broker, id); // the composite '<broker>:<orderId>' (util/orderKey.ts)
 // Owners confirmed against Mongo (the source of truth across restarts), keyed broker|orderId. Trusted without a lookup.
 const cache = new Map<string, string>();
 // Owners recorded in this process whose Mongo write has not been confirmed yet (or failed). Only a fallback when Mongo has no row:
@@ -31,6 +32,7 @@ export function ownerRowFor<T extends { broker?: unknown }>(rows: T[], broker: s
 export function recordOrderOwner(orderId: string | undefined, user: string | undefined, broker: string, opts: { foreign?: boolean } = {}): void {
     if (!orderId || !user) return;
     const id = String(orderId);
+    noteOrderId(broker, id); // INFO line when another broker used this id string today
     const k = key(broker, id);
     if (cache.has(k) || writing.has(k)) return;
     if (!unconfirmed.has(k)) {
@@ -46,7 +48,7 @@ export function recordOrderOwner(orderId: string | undefined, user: string | und
         let row = await rowsOf();
         if (!row) {
             try {
-                await col.insertOne({ orderId: id, user, broker, at: new Date(), ...(opts.foreign ? { foreign: true } : {}) });
+                await col.insertOne({ orderId: id, user, broker, [ORDER_KEY_FIELD]: k, at: new Date(), ...(opts.foreign ? { foreign: true } : {}) });
             } catch (e: any) {
                 if (e?.code !== 11000) throw e;
                 // Duplicate key: another writer got there first (same broker: it is the owner), or the pre-migration unique index on orderId alone still
@@ -144,6 +146,10 @@ export async function ensureOrderIndexes(): Promise<void> {
     if (!db) return;
     try {
         await db.collection('Trade').createIndex({ brokerOrderId: 1, action: 1 });
+        // brokerOrderKey = '<broker>:<orderId>': the fill dedupe and every order-id lookup read it (util/orderKey.ts). Non-unique: a fill may be stored as several raw docs.
+        await db.collection('Trade').createIndex({ [ORDER_KEY_FIELD]: 1, action: 1 });
+        await db.collection('closedTrades').createIndex({ [ORDER_KEY_FIELD]: 1 }, { sparse: true });
+        await db.collection(COLLECTION).createIndex({ [ORDER_KEY_FIELD]: 1 }, { sparse: true });
     } catch (e) {
         Log.log('[order] Trade index creation failed:', e);
     }

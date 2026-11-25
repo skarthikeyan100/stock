@@ -30,6 +30,8 @@ import { isWithinTradingWindow } from '../../util/marketHours';
 import { exchangeForTsym } from '../../util/underlyings';
 import { isGlobalMaxProfitLatched } from '../../strategy/globalMaxProfitLatch';
 import type { BrokerName } from '../../util/brokerName';
+import { brokerRealizedByContract, platformRealizedByContract, compareRealized, likelyCause, type BookFill } from '../../util/realizedReconcile';
+import { orderKey, orderKeyOf, orderIdFilter, stampOrderKey, noteOrderId } from '../../util/orderKey';
 
 // One row of a broker's position list, normalised across the four brokers (see OrderBookkeeping.readBrokerRows). `tsyms` and `tokens` are every
 // spelling/id the platform may have stored for the contract; `soldQty`/`soldValue` are TODAY's sells at the broker (absent where the broker does not report them).
@@ -38,7 +40,8 @@ type BrokerKey = BrokerName;
 // One contract where the platform's open quantity exceeds the broker's net, with what a non-platform sell explains (bookForeignSellShortfall).
 interface ForeignShortfall { tsym: string; platformQty: number; brokerQty: number; shortfall: number; excessQty: number; foreignBuyQty: number; foreignSellQty: number; pieces: ReturnType<typeof foreignSellExcess>['pieces']; untimedOrders: string[]; mixedProducts: boolean; ambiguousTsym: boolean }
 type BrokerFill = { orderId: string; action: 'Buy' | 'Sell'; tsym: string; token?: string; qty: number; price: number };
-export type EodMismatchKind = 'unattributedFill' | 'partialUnattributable' | 'brokerExcess' | 'brokerShort' | 'sellWithoutBuy';
+export type EodMismatchKind = 'unattributedFill' | 'partialUnattributable' | 'brokerExcess' | 'brokerShort' | 'sellWithoutBuy' | 'realizedGap';
+export type RealizedDiffRow = { broker: string; tsym: string; brokerRealized: number; platformRealized: number; diff: number; tolerance: number; cause: string };
 export type EodMismatch = { kind: EodMismatchKind; broker: BrokerKey; tsym: string; brokerQty?: number; mongoQty?: number; note?: string };
 export type EodBrokerReport = { ok: boolean; skipped?: string; error?: string; attributed?: number; bookedFills: number; bookedFlat: number; repairedClosed: number; mismatches: EodMismatch[] };
 export type MongoRestoreResult = { ok: boolean; restored: number; contracts: number; skippedExpired: string[]; skippedUnknownToken: string[]; skippedNoToken: string[]; error?: string };
@@ -249,8 +252,9 @@ class OrderBookkeeping {
             for (const r of rows) {
                 let key = String(r._id);
                 const broker = r.broker ?? 'kite', user = r.user || 'Default';
-                // A row written before the keys were broker-scoped has the bare order id as _id: re-keyed to broker|id (old document removed below).
-                const legacyKey = r.brokerOrderId != null && key === String(r.brokerOrderId) ? key : undefined;
+                // A row whose _id is not the canonical '<broker>:<orderId>' (written with the bare order id, or with the interim 'broker|id' form) is re-keyed
+                // to it (the old document is removed below). Id-less rows keep their own key.
+                const legacyKey = r.brokerOrderId != null && key !== this.fk(broker, r.brokerOrderId) ? key : undefined;
                 if (legacyKey) key = this.fk(broker, r.brokerOrderId);
                 if (this.unresolvedFills.has(key)) continue;
                 const at = new Date(r.at);
@@ -377,7 +381,8 @@ class OrderBookkeeping {
     // 'already stored in Mongo' and never registered in memory). Every fill dedupe set/lookup is therefore scoped by broker.
     // Mongo filter for a broker's rows: Kite rows may carry a legacy 'Zerodha' spelling, rows older than the broker field carry none.
     private static brokerFilter(broker: string): any { return { $in: broker === 'kite' ? ['kite', /^\s*zerodha\s*$/i, null] : [broker, null] }; }
-    private fk(broker: string | undefined, id: string | number): string { return `${broker ?? 'kite'}|${id}`; }
+    // The ONE key every in-memory order-id set/map uses: `<broker>:<orderId>` (util/orderKey.ts).
+    private fk(broker: string | undefined, id: string | number): string { return orderKey(broker, id); }
     isFillProcessed(orderId: string, broker: string = 'kite'): boolean { return this.processedFillIds.has(this.fk(broker, orderId)); }
 
     onFill(listener: FillListener) {
@@ -736,10 +741,12 @@ class OrderBookkeeping {
     // reservation carries that id (already released by its fill, a market buy, or lost in a restart). A cancelled or rejected
     // resting buy never fills, so without this its reservation leaked until restart: 2026-10-28 ~150k of phantom pending value
     // made ContinuousStrategy's max-investment gate reject every hedge for an open leg.
-    releaseReservationForOrder(orderId: string): boolean {
+    // Scoped by broker when both sides know theirs: an ANT fill whose Noren-style id equals a resting Prism buy's must not release that reservation.
+    releaseReservationForOrder(orderId: string, broker?: string): boolean {
         const id = String(orderId);
+        const b = broker ? normalizeBrokerName(broker) : undefined;
         for (const [user, list] of this.pendingOrders) {
-            const idx = list.findIndex((p) => p.orderId === id);
+            const idx = list.findIndex((p) => p.orderId === id && (!b || !p.broker || normalizeBrokerName(p.broker) === b));
             if (idx === -1) continue;
             list.splice(idx, 1);
             if (list.length === 0) this.pendingOrders.delete(user);
@@ -1317,8 +1324,9 @@ class OrderBookkeeping {
         try {
             const db = Mongo.getInstance()?.db;
             if (!db || !tradeEvent.brokerOrderId) return false;
-            // Scoped to the broker (a doc written before the broker field existed has none and still matches).
-            const hit = await db.collection('Trade').findOne({ brokerOrderId: tradeEvent.brokerOrderId, action: tradeEvent.action, broker: { $in: [tradeEvent.broker ?? 'kite', null] } }, { projection: { _id: 1 } });
+            // Scoped to the broker by the composite key; a doc written before brokerOrderKey existed matches on broker + raw id (a doc with no broker
+            // field at all matches for the broker being processed), never on another broker's id (orderIdFilter).
+            const hit = await db.collection('Trade').findOne({ action: tradeEvent.action, ...orderIdFilter(tradeEvent.broker, tradeEvent.brokerOrderId) }, { projection: { _id: 1 } });
             return !!hit;
         } catch (e) {
             Log.log('[order] fillAlreadyStored: Mongo lookup failed (treating as not stored):', tradeEvent.brokerOrderId, e);
@@ -1363,6 +1371,7 @@ class OrderBookkeeping {
         let skipInsert = false;
         const id = tradeEvent.brokerOrderId;
         const key = id ? this.fk(tradeEvent.broker, id) : '';
+        if (id && tradeEvent.broker !== 'paper') noteOrderId(tradeEvent.broker, id); // INFO line when another broker used this id string today
         // Paper broker (in-memory only): nothing is read from or written to Mongo; the id is still claimed so a redelivered fill is ignored.
         const paper = tradeEvent.broker === 'paper';
         if (id && paper) {
@@ -1428,7 +1437,7 @@ class OrderBookkeeping {
         }
         // 'Whenever another trade happens': any booked trade of this broker and contract re-checks it for a non-platform sell (debounced; a sell booked by
         // the check itself does not re-trigger it).
-        if (tradeEvent.broker && tradeEvent.broker !== 'paper' && !this.foreignBookedIds.has(String(id ?? ''))) this.foreignWatch.request(tradeEvent.broker as BrokerKey, tradeEvent.tsym, 'own-trade');
+        if (tradeEvent.broker && tradeEvent.broker !== 'paper' && !(id != null && this.foreignBookedIds.has(this.fk(tradeEvent.broker, id)))) this.foreignWatch.request(tradeEvent.broker as BrokerKey, tradeEvent.tsym, 'own-trade');
     }
 
     // Dedicated recorder for a strategy's own SellToOpen/BuyToClose fills (e.g.
@@ -1449,6 +1458,7 @@ class OrderBookkeeping {
         }
         Log.log(`[order] ${tradeEvent.action} (short) ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`);
         tradeEvent.entryTime = new Date();
+        stampOrderKey(tradeEvent);
         Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
             Log.log('[order] Mongo insert failed for short fill (continuing without persistence):', tradeEvent.tsym, e);
         });
@@ -1567,6 +1577,7 @@ class OrderBookkeeping {
         // is what actually prevents an unhandled promise rejection from
         // crashing the `order` process on a transient Mongo error.
         if (!skipInsert && tradeEvent.broker !== 'paper') {
+            stampOrderKey(tradeEvent); // persisted brokerOrderKey = '<broker>:<raw id>' beside the raw brokerOrderId (indexed; the fill dedupe reads it)
             // A lost raw doc means a restart cannot restore this fill (a Buy never comes back as a position, a Sell leaves a closed one open):
             // retry twice before giving up with an ALERT. A duplicate-key error on a retry just means an earlier attempt did land.
             const insertWithRetry = async (): Promise<void> => {
@@ -1592,7 +1603,7 @@ class OrderBookkeeping {
 
         if (tradeEvent.action == 'Buy') {
             // A resting buy's own reservation first (by order id); otherwise the FIFO/in-context release as before.
-            if (!(tradeEvent.brokerOrderId && this.releaseReservationForOrder(tradeEvent.brokerOrderId))) {
+            if (!(tradeEvent.brokerOrderId && this.releaseReservationForOrder(tradeEvent.brokerOrderId, tradeEvent.broker))) {
                 this.releasePending(tradeEvent.user || 'Default', tradeEvent.broker, tradeEvent.quantity * tradeEvent.price);
             }
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
@@ -1683,7 +1694,7 @@ class OrderBookkeeping {
 
                 // Not awaited: the row is counted from memory (unpersistedClosed) while its
                 // write is in flight, so the breach check needs no wait on the ledger write.
-                this.persistClosedTrade(closedPortion, user, tradeEvent.price);
+                this.persistClosedTrade(closedPortion, user, tradeEvent.price, tradeEvent);
                 this.checkBreachAndNotify(user);
             } else if (tradeEvent.user && tradeEvent.broker && tradeEvent.broker !== 'paper') {
                 // No open position in memory for this Sell, so no closed-trade row is written here. The raw fill is stored; once its insert has
@@ -2440,7 +2451,7 @@ class OrderBookkeeping {
         if (book.untimed.length === 0) return book;
         const fills = [...book.fills]; const untimed: TimedBook['untimed'] = [];
         for (const u of book.untimed) {
-            const at = this.eventFillTimes.get(`${broker}|${u.orderId}`);
+            const at = this.eventFillTimes.get(this.fk(broker, u.orderId));
             if (at != null && u.action && (u.qty ?? 0) > 0) fills.push({ orderId: u.orderId, tradeId: u.tradeId ?? u.orderId, action: u.action, tsym: u.tsym, qty: u.qty!, price: u.price ?? 0, at, token: u.token, aliases: u.aliases });
             else untimed.push(u);
         }
@@ -2527,7 +2538,7 @@ class OrderBookkeeping {
             const unbooked = Array.from(gttOwn).filter((id) => !this.processedFillIds.has(this.fk(broker, id)));
             if (unbooked.length > 0) { void this.gttSupport.poll().catch(() => undefined); }
         }
-        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(this.fk(broker, id)) || own(id) || (extraOwn?.(id) ?? false) || gttOwn.has(id);
+        const isPlatform = (id: string) => have.keys.has(`Buy|${this.fk(broker, id)}`) || have.keys.has(`Sell|${this.fk(broker, id)}`) || owners.has(id) || this.processedFillIds.has(this.fk(broker, id)) || own(id) || (extraOwn?.(id) ?? false) || gttOwn.has(id);
         const graceFor = (x: { ts: Trade[] }) => x.ts.some((t) => t.gttTriggerId != null) ? Math.max(opts.graceMs ?? 0, GTT_EXIT_GRACE_MS) : (opts.graceMs ?? 0); // a GTT-triggered exit is booked by the GTT poll: its sell order id is unknown to the platform until then
         return short.map((x) => {
             const maxSellAt = Date.now() - graceFor(x);
@@ -2535,7 +2546,7 @@ class OrderBookkeeping {
             const canon = new Set(mine.filter((f) => f.tsym !== x.tsym && f.aliases?.includes(x.tsym)).map((f) => f.tsym));
             const ambiguous = !mine.some((f) => f.tsym === x.tsym) && canon.size > 1;
             const untimed = book.untimed.filter((u) => !isPlatform(u.orderId) && belongs(x, u)).map((u) => u.orderId);
-            for (const id of untimed) this.untimedForeignOrders.add(`${broker}|${id}`);
+            for (const id of untimed) this.untimedForeignOrders.add(this.fk(broker, id));
             const e = foreignSellExcess(mine, isPlatform, maxSellAt, x.since);
             const blocked = untimed.length > 0 || x.mixed || ambiguous;
             return { tsym: x.tsym, platformQty: x.platformQty, brokerQty: x.brokerQty, shortfall: x.shortfall, excessQty: blocked ? 0 : e.excessQty, foreignBuyQty: e.foreignBuyQty, foreignSellQty: e.foreignSellQty, pieces: blocked ? [] : e.pieces, untimedOrders: untimed, mixedProducts: x.mixed, ambiguousTsym: ambiguous };
@@ -2600,7 +2611,7 @@ class OrderBookkeeping {
     private eventFillTimes = new Map<string, number>();
     private foreignOutcomes = new Map<string, ForeignOutcome>();
     private refusalAlertAt = new Map<string, number>();
-    private foreignBookedIds = new Set<string>(); // order ids booked by bookForeignSellShortfall (they do not re-trigger it)
+    private foreignBookedIds = new Set<string>(); // broker:order keys booked by bookForeignSellShortfall (they do not re-trigger it)
 
     // Called once the order process has finished its startup reconcile: before that nothing may be booked from an event.
     enableForeignSellWatch(): void { this.foreignWatch.enable(); }
@@ -2629,7 +2640,7 @@ class OrderBookkeeping {
             const id = String(row.orderId ?? '');
             if (!id) return false;
             if (this.processedFillIds.has(this.fk(broker, id)) || this.orderUserMap.has(this.fk(broker, id))) return false;
-            if (row.fillAt != null && Number.isFinite(row.fillAt) && row.filled) this.eventFillTimes.set(`${broker}|${id}`, row.fillAt);
+            if (row.fillAt != null && Number.isFinite(row.fillAt) && row.filled) this.eventFillTimes.set(this.fk(broker, id), row.fillAt);
             const own = (await this.clientOwnOrderTest(broker))(id) || (this.extraOwnOrderTests.get(broker)?.(id) ?? false);
             if (own) return false;
             if ((await loadOrderOwners([id], broker)).has(id)) return false;
@@ -2768,7 +2779,7 @@ class OrderBookkeeping {
                     ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = target.user; ev.broker = broker; ev.strategy = target.strategy; ev.brokerOrderId = id;
                     Log.log(`[order] ALERT: ${target.user} ${target.tsym} (${broker}) - a sell made outside the platform (order ${id}, trade ${piece.tradeIds.join('/')}) took ${qty} of the platform's lots (platform held ${f.platformQty}, broker net ${f.brokerQty}; manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}) - booking it as a sell @ ${piece.price.toFixed(2)} (entry ${Number(target.price).toFixed(2)}, P&L ${((piece.price - Number(target.price)) * qty).toFixed(2)})`);
                     recordOrderOwner(id, ev.user, broker, { foreign: true });
-                    this.foreignBookedIds.add(id);
+                    this.foreignBookedIds.add(this.fk(broker, id));
                     if (opts.notifyStrategies) await this.recordFill(ev);
                     else {
                         this.processedFillIds.add(this.fk(broker, id));
@@ -2855,8 +2866,8 @@ class OrderBookkeeping {
         if (!db) return null;
         try {
             const brokerMatch = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
-            const docs: any[] = await db.collection('Trade').find({ brokerOrderId: { $exists: true, $ne: null }, entryTime: { $gte: new Date(Date.now() - 8 * 86400000) }, ...brokerMatch }).project({ brokerOrderId: 1, action: 1, tsym: 1 }).toArray();
-            return { keys: new Set(docs.map((d) => `${d.action}|${d.brokerOrderId}`)), tsyms: new Set(docs.map((d) => String(d.tsym))) };
+            const docs: any[] = await db.collection('Trade').find({ brokerOrderId: { $exists: true, $ne: null }, entryTime: { $gte: new Date(Date.now() - 8 * 86400000) }, ...brokerMatch }).project({ brokerOrderId: 1, brokerOrderKey: 1, broker: 1, action: 1, tsym: 1 }).toArray();
+            return { keys: new Set(docs.map((d) => `${d.action}|${d.brokerOrderKey ?? orderKey(d.broker ?? broker, d.brokerOrderId)}`)), tsyms: new Set(docs.map((d) => String(d.tsym))) };
         } catch (e: any) {
             Log.log('[order] mongoFillKeys: Mongo read failed:', e?.message ?? e);
             return null;
@@ -2869,7 +2880,7 @@ class OrderBookkeeping {
     private async bookMissingSellFills(broker: BrokerKey, fills: BrokerFill[], rows: BrokerRow[], mismatches: EodMismatch[]): Promise<number> {
         const have = await this.mongoFillKeys(broker);
         if (!have) return 0;
-        const missing = fills.filter((f) => !have.keys.has(`${f.action}|${f.orderId}`));
+        const missing = fills.filter((f) => !have.keys.has(`${f.action}|${this.fk(broker, f.orderId)}`));
         if (missing.length === 0) return 0;
         const owners = await loadOrderOwners(Array.from(new Set(missing.map((f) => f.orderId))), broker);
         let booked = 0;
@@ -2892,7 +2903,7 @@ class OrderBookkeeping {
             // manual sell on 2026-11-20. The one fallback: an order whose trade-book row carried no fill time (untimedForeignOrders: ant/breeze until their time
             // field is known), where the old single-holder rule still applies, logged as a fallback.
             let target = owner ? holders.find((t) => t.user === owner) : undefined;
-            if (!owner && holders.length === 1 && this.untimedForeignOrders.has(`${broker}|${f.orderId}`)) {
+            if (!owner && holders.length === 1 && this.untimedForeignOrders.has(this.fk(broker, f.orderId))) {
                 target = holders[0];
                 Log.log(`[order] ALERT: EOD sync ${broker}: FALLBACK single-holder attribution of order ${f.orderId} (${f.tsym}) - the ${broker} trade book gave no fill time for it, so the time-aware attribution could not run`);
             }
@@ -2927,6 +2938,54 @@ class OrderBookkeeping {
             booked++;
         }
         return booked;
+    }
+
+    // Same-day proof that the platform's closedTrades equal the broker's own realized P&L, per contract (util/realizedReconcile.ts: day-average for kite / ant / prism,
+    // FIFO for breeze, tolerance 1.5 rupees x lots). A contract that differs becomes a `realizedGap` mismatch, logged as an ALERT by the caller with the likely cause:
+    // a dropped fill (no raw Trade doc, with the order-id collision named when another broker holds the same id), a stored Sell with no closedTrades row, or a pairing
+    // difference. Today's rows only; a contract carried over from an earlier day is left out (the broker's day figure cannot match it). Read-only; never throws.
+    async collectRealizedMismatches(broker: BrokerKey, out: EodMismatch[]): Promise<RealizedDiffRow[]> {
+        const diffs: RealizedDiffRow[] = [];
+        try {
+            const db = Mongo.getInstance()?.db;
+            if (!db) return diffs;
+            const book = await this.readTimedFills(broker);
+            if (!book) return diffs;
+            const day0 = OrderBookkeeping.startOfDay().getTime();
+            const todays = book.fills.filter((f) => f.at >= day0);
+            if (broker === 'breeze' && book.untimed.length > 0) { Log.log(`[order] realized check ${broker}: ${book.untimed.length} trade-book row(s) have no fill time, FIFO order unknown - not compared`); return diffs; }
+            const closed: any[] = await db.collection('closedTrades').find({ broker: OrderBookkeeping.brokerFilter(broker), exitTime: { $gte: OrderBookkeeping.startOfDay() } }).toArray();
+            const carried = new Set(closed.filter((r) => r.entryTime && new Date(r.entryTime).getTime() < day0).map((r) => String(r.tsym)));
+            const platformMap = platformRealizedByContract(closed.filter((r) => !carried.has(String(r.tsym))));
+            // A Breeze fill may be spelled with an old expiry-less tsym on the platform side: use whichever spelling the platform's rows carry.
+            const spell = (f: { tsym: string; aliases?: string[] }) => (platformMap.has(f.tsym) ? f.tsym : (f.aliases ?? []).find((a) => platformMap.has(a)) ?? f.tsym);
+            // ANT's trade book names the UNDERLYING ('NIFTY') in tradingSymbol: the contract is its instrument id, resolved through the contract master.
+            const contractOf = (f: { tsym: string; token?: string }) => (broker === 'ant' && f.token ? AntContractMaster.getInstance().findByToken(f.token)?.tradingSymbol : undefined) ?? f.tsym;
+            const fills: (BookFill & { key: string })[] = todays.filter((f) => f.qty > 0).map((f) => ({ tsym: spell({ ...f, tsym: contractOf(f) }), action: f.action, qty: f.qty, price: f.price, orderId: f.orderId, at: f.at, key: this.fk(broker, f.orderId) }));
+            const brokerMap = brokerRealizedByContract(broker, fills.filter((f) => !carried.has(f.tsym)));
+            if (!brokerMap) return diffs;
+            const soldQty = (tsym: string) => fills.filter((f) => f.tsym === tsym && f.action === 'Sell').reduce((a, f) => a + f.qty, 0) || fills.filter((f) => f.tsym === tsym).reduce((a, f) => a + f.qty, 0);
+            const have = await this.mongoFillKeys(broker);
+            const gaps = compareRealized(broker, brokerMap, platformMap, soldQty);
+            for (const g of gaps) {
+                const mine = fills.filter((f) => f.tsym === g.tsym);
+                let other = new Set<string>();
+                try {
+                    const ids = [...new Set(mine.map((f) => String(f.orderId)))];
+                    const rows: any[] = ids.length ? await db.collection('Trade').find({ brokerOrderId: { $in: ids }, broker: { $nin: [broker, null] } }).project({ brokerOrderId: 1 }).toArray() : [];
+                    other = new Set(rows.map((r) => String(r.brokerOrderId)));
+                } catch { /* evidence only */ }
+                const storedSell = (await db.collection('Trade').find({ tsym: g.tsym, action: 'Sell', broker: OrderBookkeeping.brokerFilter(broker), entryTime: { $gte: OrderBookkeeping.startOfDay() } }).project({ quantity: 1 }).toArray()).reduce((a: number, r: any) => a + (Number(r.quantity) || 0), 0);
+                const closedQty = closed.filter((r) => String(r.tsym) === g.tsym).reduce((a, r) => a + (Number(r.quantity) || 0), 0);
+                const sellsNoRow = storedSell > closedQty ? [`stored sell qty ${storedSell} > closed qty ${closedQty}`] : [];
+                const cause = likelyCause(mine, have?.keys ?? new Set(), (id) => this.fk(broker, id), other, g.diff, sellsNoRow);
+                diffs.push({ ...g, cause });
+                out.push({ kind: 'realizedGap', broker, tsym: g.tsym, note: `broker realized ${g.brokerRealized.toFixed(2)} vs platform closedTrades ${g.platformRealized.toFixed(2)} (platform - broker ${g.diff.toFixed(2)}, tolerance ${g.tolerance.toFixed(2)}): ${cause}` });
+            }
+        } catch (e: any) {
+            Log.log(`[order] realized check ${broker} failed (the sync continues):`, e?.message ?? e);
+        }
+        return diffs;
     }
 
     // Report-only differences between Mongo-derived positions and the broker (after the booking above).
@@ -2985,7 +3044,7 @@ class OrderBookkeeping {
                 if (sum !== held) continue; // the order ids do not account for the broker position (a manual order, a partial): reported as before
                 for (const [u, r] of nets) {
                     for (const sp of r.shortPieces) {
-                        const exists = await db.collection('closedTrades').findOne({ user: u, tsym, shortFirst: true, sellOrderId: String(sp.sell.brokerOrderId), buyOrderId: String(sp.buy.brokerOrderId), broker: OrderBookkeeping.brokerFilter(broker) });
+                        const exists = await db.collection('closedTrades').findOne({ user: u, tsym, shortFirst: true, buyOrderId: String(sp.buy.brokerOrderId), broker: OrderBookkeeping.brokerFilter(broker), ...orderIdFilter(broker, String(sp.sell.brokerOrderId), 'sellOrderId') });
                         if (exists) continue;
                         const sellPx = Number(sp.sell.price), buyPx = Number(sp.buy.price);
                         const pnl = (sellPx - buyPx) * sp.qty;
@@ -2994,6 +3053,7 @@ class OrderBookkeeping {
                             entryPrice: sellPx, exitPrice: buyPx, realizedPnL: pnl, entryTime: sp.sell.entryTime, exitTime: sp.buy.entryTime,
                             strategy: sp.sell.strategy ?? sp.buy.strategy, broker: normalizeBrokerName(String(sp.buy.broker ?? broker)) ?? broker,
                             createdAt: new Date(), shortFirst: true, sellOrderId: String(sp.sell.brokerOrderId), buyOrderId: String(sp.buy.brokerOrderId),
+                            brokerOrderKey: orderKey(sp.sell.broker ?? broker, String(sp.sell.brokerOrderId)), buyOrderKey: orderKey(sp.buy.broker ?? broker, String(sp.buy.brokerOrderId)), // the SELL's composite key (closedTrades.brokerOrderKey) and the buy's
                         };
                         await db.collection('closedTrades').insertOne(row as any);
                         corrected++;
@@ -3075,7 +3135,7 @@ class OrderBookkeeping {
             const { pieces, unmatched } = pairFillsFifo(fills.filter((f) => f.user === c.user));
             for (const u of unmatched) {
                 // A Sell that came before the Buy that covers it was written as a short round trip by attributeByOrderIds (per-user order-id nets): not a gap.
-                if (u.sell.brokerOrderId && await db.collection('closedTrades').findOne({ user: c.user, tsym: c.tsym, shortFirst: true, sellOrderId: String(u.sell.brokerOrderId), broker: OrderBookkeeping.brokerFilter(broker) })) continue;
+                if (u.sell.brokerOrderId && await db.collection('closedTrades').findOne({ user: c.user, tsym: c.tsym, shortFirst: true, broker: OrderBookkeeping.brokerFilter(broker), ...orderIdFilter(broker, String(u.sell.brokerOrderId), 'sellOrderId') })) continue;
                 if (new Date(u.sell.entryTime) >= since) mismatches.push({ kind: 'sellWithoutBuy', broker, tsym: c.tsym, mongoQty: u.qty, note: `${c.user}: a Sell of ${u.qty} @ ${Number(u.sell.price).toFixed(2)} (order ${u.sell.brokerOrderId ?? '-'}) has no Buy before it in Mongo - no closed trade written` });
             }
             const wanted = pieces.filter((p) => new Date(p.sell.entryTime) >= since);
@@ -3086,7 +3146,7 @@ class OrderBookkeeping {
                 const at = new Date(p.sell.entryTime).getTime();
                 let best: any; let bestGap = 5 * 60_000 + 1;
                 // A row this repair wrote earlier is recognised by the sell it was written for, whatever day it was dated to.
-                const byOrder = p.sell.brokerOrderId ? rows.find((r) => !used.has(r) && r.sellOrderId != null && String(r.sellOrderId) === String(p.sell.brokerOrderId) && Number(r.quantity) === p.qty) : undefined;
+                const byOrder = p.sell.brokerOrderId ? rows.find((r) => !used.has(r) && (r.brokerOrderKey != null ? r.brokerOrderKey === orderKey(broker, String(p.sell.brokerOrderId)) : r.sellOrderId != null && String(r.sellOrderId) === String(p.sell.brokerOrderId)) && Number(r.quantity) === p.qty) : undefined;
                 if (byOrder) { used.add(byOrder); continue; }
                 for (const r of rows) {
                     if (used.has(r) || Number(r.quantity) !== p.qty) continue;
@@ -3111,6 +3171,7 @@ class OrderBookkeeping {
                     entryPrice: p.entryPrice, exitPrice, realizedPnL: pnl, entryTime: p.buy.entryTime, exitTime: exitAt, ...(exitApprox ? { exitTimeApprox: true, bookedAt } : {}),
                     strategy: p.buy.strategy ?? p.sell.strategy, broker: normalizeBrokerName(String(p.sell.broker ?? broker)) ?? broker,
                     createdAt: new Date(), repairedFromFills: true, sellOrderId: p.sell.brokerOrderId,
+                    ...(p.sell.brokerOrderId ? { brokerOrderKey: orderKey(p.sell.broker ?? broker, String(p.sell.brokerOrderId)) } : {}),
                 };
                 await db.collection('closedTrades').insertOne(row as any);
                 inserted++;
@@ -3155,6 +3216,7 @@ class OrderBookkeeping {
             else report.mismatches.push({ kind: 'unattributedFill', broker, tsym: '*', note: 'the broker trade book could not be read - closes were booked from position totals only' });
             if (!opts.skipImpliedCloses) report.bookedFlat = await this.syncExternalCloses(broker, 0); // contracts flat at the broker with no exact fill: implied price
             this.collectEodMismatches(broker, (await this.readBrokerRows(broker)) ?? rows, report.mismatches);
+            await this.collectRealizedMismatches(broker, report.mismatches);
             for (const m of report.mismatches) Log.log(`[order] ALERT: EOD sync ${broker}: ${m.kind} ${m.tsym}${m.brokerQty != null ? ` broker=${m.brokerQty}` : ''}${m.mongoQty != null ? ` mongo=${m.mongoQty}` : ''}${m.note ? ' - ' + m.note : ''}`);
             report.ok = true;
         } catch (e: any) {
@@ -3417,7 +3479,9 @@ class OrderBookkeeping {
 
     // Never throws: a failure here must not reject the fill handler after
     // position state has already changed.
-    private async persistClosedTrade(trade: Trade, user: string, exitPrice: number): Promise<boolean> {
+    // `closer` = the Sell fill that closed it (its order id is written as sellOrderId with the composite brokerOrderKey, so a closed-trade row is traceable to
+    // the exact (broker, order); a short cover has no sell id).
+    private async persistClosedTrade(trade: Trade, user: string, exitPrice: number, closer?: Trade): Promise<boolean> {
         if (trade.broker === 'paper') return true; // paper trades live in memory only (this.closedTrades), never in Mongo
         const id = randomUUID();
         const row = {
@@ -3435,6 +3499,7 @@ class OrderBookkeeping {
             strategy: trade.strategy,
             broker: trade.broker,
             createdAt: new Date(),
+            ...(closer?.action === 'Sell' && closer.brokerOrderId ? { sellOrderId: String(closer.brokerOrderId), brokerOrderKey: orderKey(closer.broker ?? trade.broker, String(closer.brokerOrderId)) } : {}),
         };
         this.unpersistedClosed.set(id, { user, realizedPnL: trade.realizedPnL || 0, exitTime: trade.exitTime, row, attempts: 0, inFlight: false });
         this.ensureClosedRowFlushTimer();

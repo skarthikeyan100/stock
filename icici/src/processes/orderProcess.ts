@@ -127,7 +127,7 @@ for (const trackerBroker of TRACKER_BROKERS) {
         if (action === 'Buy') { void onEntryCancelled(userId, orderId); void forgetRestingMirror(userId, instrumentToken); }
         // A locked-price sell (max-profit trip) is re-placed here at its locked price, owned by the order side whether or not a strategy is
         // enabled (order/lockedSells.ts). Handled = the strategies are not told (their resting-sell bookkeeping stays right).
-        if (action === 'Sell' && isLockedSell(orderId)) {
+        if (action === 'Sell' && isLockedSell(broker, orderId)) {
             void onLockedSellCancelled(userId, tradingSymbol, quantity, action, broker, orderId, reason, rejectReason)
                 .catch((e) => { Log.log('[order] ALERT: lockedSells handler threw:', e); return false; })
                 .then((handled) => { if (!handled) broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason }); });

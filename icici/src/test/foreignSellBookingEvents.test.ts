@@ -120,7 +120,7 @@ async function main() {
     pending = [{ orderId: 'PEND1', userId: 'ContinuousStrategy', tradingSymbol: TS, action: 'Sell', quantity: 65 }];
     assert(await bookkeeping.noteBrokerOrderEvent('kite', { orderId: 'PEND1', side: 'Sell', tsym: TS, filled: true }) === false, 'a tracked pending order is not foreign');
     pending = [];
-    b.processedFillIds.add('kite|BOOKED1');
+    b.processedFillIds.add('kite:BOOKED1');
     assert(await bookkeeping.noteBrokerOrderEvent('kite', { orderId: 'BOOKED1', side: 'Sell', tsym: TS, filled: true }) === false, 'an already booked order is not foreign');
     await sleep(100);
     assert(runLog.length === 0, 'none of those triggered a check');
@@ -218,7 +218,7 @@ async function main() {
 
     // (5) a fill time from the order-update stream completes a trade-book row without one
     reset();
-    b.eventFillTimes.set('ant|ANT1', T0 + 36 * 60_000);
+    b.eventFillTimes.set('ant:ANT1', T0 + 36 * 60_000);
     const merged = b.applyEventFillTimes('ant', { fills: [], untimed: [{ orderId: 'ANT1', tsym: TS, action: 'Sell', qty: 195, price: 104, tradeId: 'ANT1#0' }, { orderId: 'ANT2', tsym: TS, action: 'Sell', qty: 5, price: 104 }] });
     assert(merged.fills.length === 1 && merged.fills[0].at === T0 + 36 * 60_000 && merged.untimed.length === 1 && merged.untimed[0].orderId === 'ANT2', 'untimed row takes the stream fill time; a row with no stream time stays untimed (nothing booked on a guess)');
 

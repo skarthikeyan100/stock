@@ -173,7 +173,7 @@ async function main() {
     for (const tracked of [true, false]) {
         reset();
         const TR = uniq('26112000');
-        b.untimedForeignOrders.add(`ant|${TR}`);
+        b.untimedForeignOrders.add(`ant:${TR}`);
         b.trades.push(platformTrade('ant', AT, 'ContinuousStrategy-Ant', 195, 114, ist(10, 50, 5)));
         b.setPendingOrderSource(() => (tracked ? [{ orderId: TR, userId: 'ContinuousStrategy-Ant', tradingSymbol: AT, action: 'Sell' as const, quantity: 195 }] : []));
         const told: string[] = [];

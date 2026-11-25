@@ -36,16 +36,7 @@ import { recordTick } from './strategies/markPrice';
 // order process) falls back to counting this process's own fill stream.
 const openQty = new Map<string, number>();
 const openQtyExchange = new Map<string, 'NFO' | 'BFO'>();
-// Fills already applied, so a duplicate delivery (same broker order + side) cannot double-count the net quantity.
-const seenFillKeys = new Set<string>();
-function isDuplicateFill(trade: Trade): boolean {
-    if (!trade.brokerOrderId) return false;
-    const key = `${trade.brokerOrderId}|${trade.action}|${trade.quantity}`;
-    if (seenFillKeys.has(key)) return true;
-    seenFillKeys.add(key);
-    if (seenFillKeys.size > 5000) seenFillKeys.delete(seenFillKeys.values().next().value as string);
-    return false;
-}
+import { isDuplicateFill } from './strategies/duplicateFill';
 // A reset strategy abandons its positions' bookkeeping: drop the net quantities and trade-holder registrations.
 function clearOpenQtyFor(strategy: { userId?: string }): void {
     for (const key of Array.from(openQty.keys())) {

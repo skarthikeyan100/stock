@@ -244,7 +244,7 @@ async function marketBuyOf(userId: string, tsym: string, token: string, quantity
         await new Promise((r) => setTimeout(r, 250));
     }
     const o = orders.get(orderId);
-    if (o) { orders.delete(orderId); releaseTick(o); bookkeeping.releaseReservationForOrder(orderId); }
+    if (o) { orders.delete(orderId); releaseTick(o); bookkeeping.releaseReservationForOrder(orderId, 'paper'); }
     throw new Error(`paper: buy ${tsym} @ ${price} (best bid) did not fill within ${MARKET_BUY_WAIT_MS / 1000}s - cancelled`);
 }
 
@@ -278,7 +278,7 @@ export const PaperExecutor: BrokerExecutor = {
         orders.delete(orderId);
         releaseTick(o);
         // The caller of an explicit cancel owns what happens next, like every other broker's tracker (no listener call).
-        bookkeeping.releaseReservationForOrder(orderId);
+        bookkeeping.releaseReservationForOrder(orderId, 'paper');
     },
 
     getLiveQuantity: async (tsym) => bookkeeping.trades.filter((t) => t.broker === 'paper' && t.tsym === tsym).reduce((n, t) => n + t.quantity, 0),

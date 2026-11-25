@@ -5,6 +5,7 @@ import { OptionExchange } from './BrokerExecutor';
 import { squareOffLimitChunked } from './chunkedOrder';
 import { getBrokerExecutor } from './brokerExecutors';
 import { isNonTransientRejection } from '../../strategy/maxProfitLock';
+import { orderKey } from '../../util/orderKey';
 
 // The LOCKED-PRICE sell of a max-profit trip (SimpleContinuousStrategy / ScaledHedgedStrategy / global max-profit) is owned by the ORDER process
 // from the moment it is placed (user's rule 2026-11-17: "the goal is to sell at the locked price"; a locked sell that is cancelled leaves the
@@ -25,7 +26,9 @@ const PLACE_TRIES = 3;
 const RETRY_DELAY_MS = 5_000;
 const today = () => new Date().toLocaleDateString('en-CA');
 const col = () => Mongo.getInstance()?.db?.collection('lockedSells');
+// Keyed '<broker>:<orderId>': ANT and Prism issue colliding Noren-style ids, a bare-id ledger let one broker's order overwrite / forget the other's.
 const ledger = new Map<string, LockedSell>();
+const keyOfRow = (r: { broker: string; orderId: string }) => orderKey(r.broker, r.orderId);
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export async function loadLockedSellsFromMongo(): Promise<void> {
@@ -33,19 +36,19 @@ export async function loadLockedSellsFromMongo(): Promise<void> {
     if (!c) return;
     const rows = (await c.find({}).toArray()) as unknown as LockedSell[];
     for (const r of rows) {
-        if (r.day !== today()) { void c.deleteOne({ orderId: r.orderId }).catch(() => undefined); continue; } // a day order does not outlive its day
-        ledger.set(r.orderId, r);
+        if (r.day !== today()) { void c.deleteOne({ _id: (r as any)._id }).catch(() => undefined); continue; } // a day order does not outlive its day
+        ledger.set(keyOfRow(r), r);
     }
     if (ledger.size > 0) Log.log(`[order] lockedSells: restored ${ledger.size} locked-price sell(s) after restart`);
 }
 
-export function isLockedSell(orderId: string): boolean { return ledger.has(orderId); }
+export function isLockedSell(broker: string, orderId: string): boolean { return ledger.has(orderKey(broker, orderId)); }
 
 async function record(rows: LockedSell[]): Promise<void> {
-    for (const r of rows) ledger.set(r.orderId, r);
+    for (const r of rows) ledger.set(keyOfRow(r), r);
     const c = col();
     if (!c) { Log.log('[order] ALERT: lockedSells: Mongo not connected - the locked sell is guarded until a restart only'); return; }
-    for (const r of rows) await c.replaceOne({ orderId: r.orderId }, r, { upsert: true }).catch((e) => Log.log('[order] lockedSells: Mongo persist failed for', r.orderId, e));
+    for (const r of rows) await c.replaceOne({ orderId: r.orderId, broker: r.broker }, r, { upsert: true }).catch((e) => Log.log('[order] lockedSells: Mongo persist failed for', r.orderId, e));
 }
 
 /** Called right after a `locked` limit sell was placed: one ledger row per resting order. */
@@ -53,9 +56,9 @@ export async function recordLockedSells(userId: string, broker: string, tsym: st
     await record(orderIds.filter(Boolean).map((orderId) => ({ orderId: String(orderId), userId, broker, tsym, token, exchange, price, replacements, day: today() })));
 }
 
-function forget(orderId: string): void {
-    ledger.delete(orderId);
-    void col()?.deleteOne({ orderId }).catch((e) => Log.log('[order] lockedSells: Mongo delete failed for', orderId, e));
+function forget(broker: string, orderId: string): void {
+    ledger.delete(orderKey(broker, orderId));
+    void col()?.deleteOne({ orderId, broker }).catch((e) => Log.log('[order] lockedSells: Mongo delete failed for', orderId, e));
 }
 
 /**
@@ -65,9 +68,9 @@ function forget(orderId: string): void {
  */
 export async function onLockedSellCancelled(userId: string, tsym: string, quantity: number, action: 'Buy' | 'Sell', broker: string, orderId: string, reason: string, rejectReason?: string): Promise<boolean> {
     if (action !== 'Sell') return false;
-    const row = ledger.get(orderId);
+    const row = ledger.get(orderKey(broker, orderId));
     if (!row) return false;
-    forget(orderId); // exactly one handler per order id
+    forget(row.broker, orderId); // exactly one handler per (broker, order id)
     if (quantity <= 0) return true;
     if (row.replacements >= MAX_REPLACEMENTS) {
         Log.log(`[order] ALERT: locked sell ${tsym} (${userId}, ${broker}) @${row.price} was ${reason}${rejectReason ? ` (${rejectReason})` : ''} again after ${row.replacements} re-placements - NOT re-placed, the position may be unmanaged`);

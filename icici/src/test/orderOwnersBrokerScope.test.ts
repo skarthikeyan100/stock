@@ -118,7 +118,7 @@ const fresh = () => { delete require.cache[require.resolve('../processes/order/o
     const b: any = bookkeeping;
     bookkeeping.markGttExit('kite', ID, 77);
     assert(bookkeeping.isBrokerOwnedExit('kite', ID) && !bookkeeping.isBrokerOwnedExit('ant', ID) && !bookkeeping.isBrokerOwnedExit('prism', ID), 'a Kite GTT exit is not the exit of another broker\'s order with the same id');
-    assert(b.gttFiredOrders.get('kite|' + ID) === 77 && !b.gttFiredOrders.has('ant|' + ID), 'gttFiredOrders keyed broker|id');
+    assert(b.gttFiredOrders.get('kite:' + ID) === 77 && !b.gttFiredOrders.has('ant:' + ID), 'gttFiredOrders keyed broker|id');
     bookkeeping.trackOrder(ID, 'prismUser', 'prism');
     assert(b.resolveUser(ID, undefined, 'prism') === 'prismUser' && b.resolveUser(ID, undefined, 'ant') === 'Default', 'order->user map: an ANT order of the same id is not the Prism user\'s');
     const mk = (broker: string, user: string): Trade => { const t = new Trade(); t.tsym = 'NIFTY26NOV25550CE'; t.quantity = 65; t.price = 0; t.action = 'Sell'; t.status = 'COMPLETE'; t.user = user; t.broker = broker as any; t.brokerOrderId = ID; return t; };

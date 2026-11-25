@@ -19,13 +19,18 @@
 # Table: broker, realized, unrealized, total (2 decimals, equal to the broker's own figures), a TOTAL row, one `users*` row, then the NET line. Each broker uses its OWN convention: kite, ant, prism the DAY-AVERAGE (realized = sold qty x (avg sell - avg buy), unrealized = open qty x (ltp - avg of the open side)), not FIFO); breeze reports the average of its still-open lots, so it is FIFO per contract from its trade book. Kite derives the split from its buy/sell value fields (it reports every pnl as unrealised), ant and prism use their own realized/unrealized fields, breeze (no P&L reported) is derived from its trade book. A proof per broker (total = the broker's own pnl / MtoM / amounts, breeze net quantity and FIFO open-lot average = its positions) or a carried-over contract prints "ERROR: <why>" instead of a number and the NET line then says it excludes that broker. The `users*` row (real frontend users, from /strategyPnl) is NOT added to TOTAL / NET: their trades are already in the brokers' books.
 # Paper is left out by the BROKER of each trade / position, never by a strategy's current config: a real trade of a strategy that is on paper now stays
 # in BY STRATEGY and BY BROKER (their TOTALs agree), a paper trade never shows, and a paper-only strategy with no real trade has no row.
-# Usage: scripts/strategy-status.sh [net|users] [all] [port]
+# `reconcile` is the same-day proof that the platform's books equal the brokers': per broker and per contract, the broker's own realized P&L (the `net` figures:
+# kite, ant, prism day-average, breeze FIFO, from each broker's trade book) against the platform's closedTrades realized (/strategyPnl?closed=1), listing every contract
+# that differs by more than 1.5 rupees x lots with the likely cause (a fill with no raw Trade doc, an order-id collision with another broker, a Sell with no closedTrades
+# row, a pairing difference). Read-only (dist/tools/reconcileRealized.js; the platform's own 15:45 sync logs the same gaps as `realizedGap` ALERT lines).
+# Usage: scripts/strategy-status.sh [net|users|reconcile] [all] [port]
 #   e.g.  scripts/strategy-status.sh   |  scripts/strategy-status.sh all 3000  |  scripts/strategy-status.sh 3000  |  scripts/strategy-status.sh users  |  scripts/strategy-status.sh users all
 OPENED=today
 USERS=0
 NET=0
 ARGS=()
-for a in "$@"; do if [ "$a" = "all" ]; then OPENED=all; elif [ "$a" = "users" ]; then USERS=1; elif [ "$a" = "net" ]; then NET=1; else ARGS+=("$a"); fi; done
+for a in "$@"; do if [ "$a" = "reconcile" ]; then RECONCILE=1; fi; done
+for a in "$@"; do if [ "$a" = "all" ]; then OPENED=all; elif [ "$a" = "reconcile" ]; then :; elif [ "$a" = "users" ]; then USERS=1; elif [ "$a" = "net" ]; then NET=1; else ARGS+=("$a"); fi; done
 PORT="${ARGS[0]:-3000}"
 for a in "$@"; do if [ "$a" = "list" ]; then
   cat <<'LIST'
@@ -34,11 +39,15 @@ status all         the same 3 tables, also trades opened on an earlier day and c
 status users       the real users (emails) who trade from the frontend: BY USER, BY BROKER, OPEN POSITIONS, closed TRADES (opened today)
 status users all   the same, also earlier-day trades
 status net         brokers' own books, equal to each broker's figures (realized, unrealized, total per broker, proof-checked), a users* row (not in NET), then NET; manual orders included
+status reconcile   per broker and contract: the broker's realized P&L against the platform's closedTrades, every contract that differs (> 1.5 rupees x lots) with the likely cause
 status paper       paper-broker strategies (GammaBurst, HighLow on paper): config, paper positions and trades, log lines
 status list        this list
 LIST
   exit 0
 fi; done
+if [ "${RECONCILE:-0}" = 1 ]; then
+  exec node "$(dirname "$0")/../dist/tools/reconcileRealized.js" "$PORT"
+fi
 if [ "$NET" = 1 ]; then
   # `status net` (user's rule 2026-11-20: the brokers' OWN books, so manual / non-platform orders count too; 2026-11-25: realized, unrealized and total
   # must equal what each broker itself reports, rupee for rupee, 2 decimals). Per broker (kite/ant/prism use the broker's DAY-AVERAGE convention: realized =
