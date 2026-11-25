@@ -162,9 +162,11 @@ async function sizingQuote(exch: string, token: string): Promise<{ ltp: number; 
 async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number, lotSize?: string | number): Promise<Trade> {
     const sized = req.quantity != null ? undefined : await sizingQuote(exch, token);
     const quantity = sizeManualBuyOrRefuse(req, tsym, sized?.ltp, Number(lotSize) || undefined);
+    // The per-trade loss budget is an exit, not a size cap: the stop (the bracket's, or the in-app watch's) is held to budget / quantity per share.
+    const stop = sized && sized.ltp > 0 ? bookkeeping.lossBudgetStopPoints(req.userId, 'ant', tsym, quantity, sized.ltp, stopLossPoints, req.quantity) ?? stopLossPoints : stopLossPoints;
     req.mirror?.({ userId: req.userId, broker: 'ant', tsym, token, exchange: exch, quantity,
-        place: (adminId, qty) => enterManualPositionChunked(adminId, tsym, token, qty, exch, targetPoints, stopLossPoints) });
-    return enterManualPositionChunked(req.userId, tsym, token, quantity, exch, targetPoints, stopLossPoints, sized);
+        place: (adminId, qty) => enterManualPositionChunked(adminId, tsym, token, qty, exch, targetPoints, stop) });
+    return enterManualPositionChunked(req.userId, tsym, token, quantity, exch, targetPoints, stop, sized);
 }
 
 // A manual ANT buy above one freeze order is placed as several orders (chunkedOrder.manualBuyChunked). A split position is NOT protected by
@@ -175,6 +177,7 @@ function enterManualPositionChunked(userId: string, tsym: string, token: string,
         label: 'manualBuyChunked', userId, tradingSymbol: tsym, exchange: exch, quantity,
         placeOne: (qty, inAppExit) => enterPosition(userId, tsym, token, qty, exch, targetPoints, stopLossPoints, 'bracket', sized, undefined, inAppExit),
         onBooked: () => exitMonitor.watchAggregate(userId, tsym, token, exch, 'ant'),
+        afterBook: () => { bookkeeping.tightenStopToLossBudget(userId, 'ant', tsym); },
     });
 }
 

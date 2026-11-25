@@ -237,11 +237,15 @@ export async function manualBuyChunked(opts: {
     placeOne: (quantity: number, inAppExit: boolean) => Promise<Trade>;
     // Called once after the last chunk that booked anything (also on a partial run): re-points the exit watch at the aggregate row.
     onBooked?: () => void;
+    // Called once after the run, single order or chunked, whatever the outcome (the loss-budget stop of the merged position, bookkeeping.tightenStopToLossBudget).
+    afterBook?: () => void;
     freezeQty?: number;
 }): Promise<Trade> {
     const { label, userId, tradingSymbol, exchange, quantity, placeOne } = opts;
     const chunks = splitIntoFreezeQtyChunks(quantity, opts.freezeQty ?? defaultFreezeQty(tradingSymbol, exchange));
-    if (chunks.length === 1) return placeOne(quantity, false);
+    if (chunks.length === 1) {
+        try { return await placeOne(quantity, false); } finally { opts.afterBook?.(); }
+    }
     Log.log(`[order] ${label}: ${tradingSymbol} qty=${quantity} for ${userId} placed as ${chunks.length} orders (${chunks.join(' + ')}), exits watched in-app on the whole position`);
     let filledQty = 0;
     let filledValue = 0;
@@ -273,6 +277,7 @@ export async function manualBuyChunked(opts: {
         }
     } finally {
         if (filledQty > 0) opts.onBooked?.();
+        opts.afterBook?.();
     }
     const aggregate = Object.assign(new Trade(), last);
     aggregate.quantity = filledQty;

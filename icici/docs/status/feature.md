@@ -131,7 +131,7 @@ Basis: `docs/guides/strategies.md`, `docs/architecture/Architecture.md`, `docs/a
 - Flash Trade (server-sized, global target/stop) and Search & Buy (Advanced)
 - `POST /order/buy`, `/order/squareoff`, `/order/settarget`, `/order/lock-profits`, `GET /order/can-place`, `/order/contract-quote`
 - Multi-broker manual fan-out; user broker choice; investment mode vs lot-count mode
-- Per-trade loss cap sizing (`levelLimits`)
+- Per-trade loss budget as an exit (`levelLimits`; stop held to budget / quantity, quantity sized from capital)
 - Level gating server-side (`levelGate`)
 - Live position/NIFTY/option SSE streams, notification stream, ANT raw stream
 - Act-as (admin impersonation) with cookie

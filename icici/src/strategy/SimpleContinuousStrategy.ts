@@ -825,7 +825,22 @@ export default class SimpleContinuousStrategy extends Strategy {
             this.save();
             Log.log(`[SimpleContinuousStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
         } else if (!leg.hedged) await this.hedge(leg, 'target met', same);
+        else if (!leg.restarted && this.chainDead()) {
+            // The chain's last leg closed carrying a stale `hedged` flag (2026-11-25 Breeze: a hedge buy that was cancelled unfilled left it true with no hedge
+            // leg; the stop loss then closed the last leg and nothing could ever be placed again - the one-root gate was shut and there was no leg to hedge from).
+            // Nothing is open, waiting or in flight: clear the flag and hedge from this leg now (a loss buys the opposite right, a profit the same one, as above).
+            leg.hedged = false;
+            this.save();
+            Log.log(`[SimpleContinuousStrategy] ${leg.tsym} closed as the last leg of the chain with a stale hedged flag and nothing open: continuing the cycle from it`);
+            await this.hedge(leg, same ? 'target met' : 'stop loss', same);
+        }
     };
+
+    // No open leg, no hedge waiting to be placed and no hedge buy in flight: with the one-root-per-day gate shut nothing could ever place another order.
+    private chainDead(): boolean {
+        if (this.openLegs().length > 0 || this.pendingSides.size > 0) return false;
+        return !Object.values(this.state.legs).some((l) => l.hedgeWaiting && !l.hedged);
+    }
 
     onOrderCancelled = async (n: OrderCancelledNotification): Promise<void> => {
         // A resting sell that was cancelled outside this strategy is re-placed by the tick retry (sellQty is reset here).

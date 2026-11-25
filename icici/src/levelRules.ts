@@ -14,7 +14,7 @@ export interface LevelRules {
     level: ProficiencyLevel;
     maxDailyDrawdownPercent: number;   // % of the allocated capital
     maxWeeklyDrawdownPercent: number;  // % of the allocated capital
-    maxLossPerTradePercent: number;    // % of the allocated capital one trade may lose at its stop-loss (sizes the position)
+    maxLossPerTradePercent: number;    // % of the allocated capital one trade may lose at its stop-loss (enforced as the position's stop, never as a size cap: see levelLimits.ts)
     capital: number;                   // starting allocated capital in rupees
     profitSplitPercent: number;        // the user's share of gross profit
 }

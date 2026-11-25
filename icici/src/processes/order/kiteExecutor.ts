@@ -324,7 +324,8 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget, false, 'kite');
-        return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
+        const stopPoints = bookkeeping.lossBudgetStopPoints(req.userId, 'kite', resolved.tradingSymbol, quantity, price, req.stopLossPoints, req.quantity);
+        return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, stopPoints, req.mirror);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
@@ -340,7 +341,8 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize, req.stopLossPoints, req.contractorBudget, false, 'kite');
-        return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
+        const stopPoints = bookkeeping.lossBudgetStopPoints(req.userId, 'kite', contract.tradingSymbol, quantity, price, req.stopLossPoints, req.quantity);
+        return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, stopPoints, req.mirror);
     }
 
     // Index-ATM path: resolve the entry strike every broker shares (ANT-sourced spot), then size and enter exactly like the strike branch
@@ -366,6 +368,7 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
         label: 'manualBuyChunked', userId, tradingSymbol, exchange, quantity,
         placeOne: (qty, inAppExit) => buyOneContractOnKite(userId, tradingSymbol, commonToken, qty, exchange, targetPoints, stopLossPoints, inAppExit),
         onBooked: () => exitMonitor.watchAggregate(userId, tradingSymbol, commonToken, exchange, 'kite'),
+        afterBook: () => { bookkeeping.tightenStopToLossBudget(userId, 'kite', tradingSymbol); },
     });
 }
 

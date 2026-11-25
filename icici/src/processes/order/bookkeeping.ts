@@ -19,7 +19,7 @@ import { timedFillsFromKite, timedFillsFromAnt, timedFillsFromBreeze, timedFills
 import configService from '../../prism/ConfigService';
 import { drawdownDecision } from '../../prism/percentConfig';
 import { levelRules } from '../../levelRules';
-import { maxLotsForLossCap } from '../../levelLimits';
+import { lossBudgetRupees, lossBudgetStop, lossBudgetStopPrice } from '../../levelLimits';
 import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
 import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
@@ -535,25 +535,63 @@ class OrderBookkeeping {
         const capitalLots = lots;
         const perOrderCap = this.getUserPerOrderCap(userId);
         if (perOrderCap !== undefined && lots * perLot > perOrderCap) lots = Math.max(1, Math.floor(perOrderCap / perLot));
-        // Per-trade loss cap (levelRules.maxLossPerTradePercent): one stop-out may not lose more than that % of the account capital, so a cheap
-        // option with a wide stop buys fewer lots. The stop used is the order's own, else the user's, else the global default; one lot is the floor.
-        const lvSettings = configService.getConfig().settings as any;
-        const lossCapLots = maxLotsForLossCap({
-            capital: ctx.accountCapital,
-            maxLossPercent: levelRules(lvSettings, this.userSettingsCache.get(userId)?.proficiencyLevel).maxLossPerTradePercent,
-            stopPoints: stopLossPoints ?? this.getUserStopLossPoints(userId) ?? Number(lvSettings?.stopLossPoints),
-            lotSize,
-        });
-        const beforeLossCap = lots;
-        if (lossCapLots !== undefined && lots > lossCapLots) lots = Math.max(1, lossCapLots);
+        // The per-trade loss budget (levelRules.maxLossPerTradePercent) does NOT shrink the quantity (user decision 2026-11-25): the order is sized from the
+        // capital above. It is enforced as an exit instead - see lossBudgetStopPoints / tightenStopToLossBudget.
         // `clampToFreeze` false (frontend manual buys, 2026-11-17): the quantity may exceed one exchange freeze order because the executor
         // places it as several orders (chunkedOrder.manualBuyChunked). A caller that places ONE order (a resting limit entry) keeps the clamp.
         if (clampToFreeze) {
             const freeze = tsym.startsWith('SENSEX') ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
             lots = Math.max(1, Math.min(lots, Math.floor(freeze / lotSize)));
         }
-        Log.log(`[order] manual buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (capital allows ${capitalLots}, available ${available}${perOrderCap !== undefined ? `, per-order cap ${perOrderCap}` : ''}${lots < capitalLots ? ' - clamped by the account limits' : ''}${lots < beforeLossCap ? ' - clamped by the per-trade loss cap' : ''})`);
+        Log.log(`[order] manual buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (capital allows ${capitalLots}, available ${available}${perOrderCap !== undefined ? `, per-order cap ${perOrderCap}` : ''}${lots < capitalLots ? ' - clamped by the account limits' : ''})`);
         return lots * lotSize;
+    }
+
+    // The rupees one trade of this user may lose (levelRules.<level>.maxLossPerTradePercent x accountCapital), for a real investmentAmount-mode
+    // account only: not a contractor (own budget path), not a strategy's pseudo-user, not lotCount mode, no capital -> undefined (no budget).
+    lossBudgetFor(user: string): number | undefined {
+        if (this.isContractorUser(user) || this.isStrategyUser(user)) return undefined;
+        const cache = this.userSettingsCache.get(user);
+        if (!cache || (cache.investmentMode ?? 'investmentAmount') !== 'investmentAmount') return undefined;
+        const pct = levelRules(configService.getConfig().settings as any, cache.proficiencyLevel).maxLossPerTradePercent;
+        return lossBudgetRupees(cache.accountCapital ?? 0, pct);
+    }
+
+    // The stop distance (points) to attach to a frontend manual buy of `quantity` at `price` so the position is SOLD when its loss reaches the loss
+    // budget: the nearer of the order's / user's / global stop and the budget distance for the whole position (this buy plus any open position on the
+    // same contract and broker: an add-more is budgeted against the combined position). Returns the configured stop unchanged when no budget applies
+    // (explicit quantity, contractor, strategy, lotCount mode). Callers pass the result as the order's stopLossPoints.
+    lossBudgetStopPoints(userId: string, broker: string, tsym: string, quantity: number, price: number, stopLossPoints: number | undefined, explicitQuantity?: number): number | undefined {
+        if (explicitQuantity != null) return stopLossPoints;
+        const configured = stopLossPoints ?? this.getUserStopLossPoints(userId) ?? (Number(configService.getConfig().settings?.stopLossPoints) || undefined);
+        const budget = this.lossBudgetFor(userId);
+        if (budget === undefined) return stopLossPoints;
+        const own = this.trades.find((t) => t.tsym === tsym && t.user === userId && (t.broker ?? 'kite') === broker);
+        const r = lossBudgetStop({ budget, newQty: quantity, price, stopPoints: configured, existingQty: own?.quantity, existingAvg: own?.price });
+        if (!r) return stopLossPoints;
+        if (r.belowTick) Log.log(`[order] ALERT: loss budget ${Math.round(budget)} over ${quantity + (own?.quantity ?? 0)} qty of ${tsym} (${userId}) is under one tick per share - the stop is held at one tick (${r.points}); the position cannot be held to the budget`);
+        Log.log(`[order] loss budget ${Math.round(budget)} for ${userId} ${tsym}: qty ${quantity}${own ? ` + open ${own.quantity}` : ''} @ ${price} -> stop ${r.points} pts${r.tightened ? ` (tightened from ${configured ?? 'unset'})` : ' (the configured stop is already tighter)'}`);
+        return r.points;
+    }
+
+    // After a manual buy has booked (every chunk, an add-more) and on restart restore: the merged position's stop is raised, never lowered, to the loss
+    // budget stop for its WHOLE quantity and average cost, re-armed in the exit monitor (a Kite GTT is modified in place). Returns true when it changed.
+    tightenStopToLossBudget(userId: string, broker: string, tsym: string): boolean {
+        const row = this.trades.find((t) => t.tsym === tsym && t.user === userId && (t.broker ?? 'kite') === broker);
+        const budget = this.lossBudgetFor(userId);
+        if (!row || budget === undefined || row.strategy || row.stopLossPrice == null || !(row.quantity > 0)) return false;
+        const need = lossBudgetStopPrice(budget, row.quantity, row.price);
+        if (need === undefined || !(need > row.stopLossPrice + 1e-9)) return false;
+        Log.log(`[order] loss budget ${Math.round(budget)}: stop of ${tsym} (${userId}, ${broker}) raised ${row.stopLossPrice} -> ${need} for the whole position (${row.quantity} @ ${row.price})`);
+        row.stopLossPrice = need;
+        const exchange = exchangeForTsym(tsym);
+        const gtt = row.gttTriggerId;
+        // A broker-owned exit (a Kite GTT sized for an earlier lot, an ANT bracket) cannot be re-priced here without risking an oversell: say so.
+        if (gtt != null) Log.log(`[order] ALERT: ${tsym} (${userId}) holds Kite GTT ${gtt} with its earlier, looser stop - the loss budget stop ${need} is recorded but the GTT is the exit; set the stop to ${need} in the positions page`);
+        else if (row.antOrderNo) Log.log(`[order] ALERT: ${tsym} (${userId}) is an ANT bracket position - its broker stop cannot be tightened to the loss budget stop ${need}`);
+        if (row.token && (broker === 'kite' || broker === 'ant' || broker === 'breeze') && !row.antOrderNo) exitMonitor.registerTrade(row, exchange, broker, gtt != null);
+        this.notifyTargetStopLossChanged();
+        return true;
     }
 
     // Used by chunkedBuyIndex (orderProcess.ts) when a caller passes
@@ -1743,6 +1781,17 @@ class OrderBookkeeping {
         if (typeof tsym !== 'string') return false;
         if (tsym.endsWith('CE') || tsym.endsWith('PE')) return true;
         return /[CP]\d+$/.test(tsym);
+    }
+
+    // A restored position's stop is held to the loss budget too (the raw fill docs hold the stop each fill was placed with).
+    private capRestoredStop(trade: Trade): void {
+        const budget = this.lossBudgetFor(trade.user);
+        if (budget === undefined || trade.strategy || trade.stopLossPrice == null || !(trade.quantity > 0)) return;
+        const need = lossBudgetStopPrice(budget, trade.quantity, trade.price);
+        if (need !== undefined && need > trade.stopLossPrice + 1e-9) {
+            Log.log(`[order] loss budget ${Math.round(budget)}: restored stop of ${trade.tsym} (${trade.user}) raised ${trade.stopLossPrice} -> ${need}`);
+            trade.stopLossPrice = need;
+        }
     }
 
     private mergeRestored(restored: Trade[]): void {
@@ -3213,6 +3262,7 @@ class OrderBookkeeping {
             trade.open = true;
             trade.targetPrice = row.targetPrice;
             trade.stopLossPrice = row.stopLossPrice;
+            this.capRestoredStop(trade);
             // Every surviving lot may carry its own GTT (separate buys): keep them ALL so each is released on the exit, not just the newest lot's.
             const gttIds = Array.from(new Set(rows.map((r: any) => r.gttTriggerId).filter((g: any) => g != null)));
             trade.gttTriggerId = row.gttTriggerId ?? (gttIds[0] as any);

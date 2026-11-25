@@ -160,7 +160,7 @@ export function levelTermsBlocks(level: ProficiencyLevel, settings: Record<strin
         orig('PropFirm allocates trading capital'), orig('Capital allocation may be adjusted'), orig('You must trade within your allocated'), orig('Exceeding capital allocation'),
         li(`Starting allocated capital at the ${levelLabel(level)} level: ${rupees(cap)}${isBeginner ? '' : '; more on request after 2 successful weeks'}.`),
         h3('3.6 Maximum Loss per Trade'),
-        li(`One trade may not lose more than ${r.maxLossPerTradePercent}% of allocated capital (${capMoney(r.maxLossPerTradePercent)}) at its stop-loss. Positions are sized down automatically to respect this limit.`),
+        li(`One trade may not lose more than ${r.maxLossPerTradePercent}% of allocated capital (${capMoney(r.maxLossPerTradePercent)}) at its stop-loss. Each position is sold automatically when its loss reaches this limit.`),
         h3('3.7 Level Features'),
     );
     if (isBeginner) {

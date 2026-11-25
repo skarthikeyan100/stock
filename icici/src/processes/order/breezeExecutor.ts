@@ -1073,7 +1073,10 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
     if (!Number.isInteger(quantity) || !(quantity > 0) || (lot > 0 && quantity % lot !== 0)) {
         throw new Error(`Manual buy ${tsym}: quantity ${quantity} must be a positive multiple of the lot size ${lot} - not placed`);
     }
-    const { target, stop } = manualBuyExits(userId, targetPoints, stopLossPoints);
+    const exits = manualBuyExits(userId, targetPoints, stopLossPoints);
+    const target = exits.target;
+    // The per-trade loss budget is an exit, not a size cap: the in-app stop is held to budget / quantity per share.
+    const stop = bookkeeping.lossBudgetStopPoints(userId, 'breeze', tsym, quantity, bestAsk, exits.stop > 0 ? exits.stop : undefined, requestedQuantity) ?? exits.stop;
 
     // The admin mirror starts now, in parallel with this order (it does not wait for the user's fill). The admin leg resolves its own exit
     // points the same way (the user's request, else the user's own, else settings).
@@ -1141,6 +1144,7 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
     return manualBuyChunked({
         label: 'manualBuyChunked', userId, tradingSymbol: tsym, exchange: contract.exchange, quantity, placeOne,
         onBooked: () => exitMonitor.watchAggregate(userId, tsym, contract.token, contract.exchange, 'breeze'),
+        afterBook: () => { bookkeeping.tightenStopToLossBudget(userId, 'breeze', tsym); },
     });
 }
 
