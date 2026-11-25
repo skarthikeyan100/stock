@@ -107,7 +107,7 @@ Basis: `docs/guides/strategies.md`, `docs/architecture/Architecture.md`, `docs/a
 - **ContinuousStrategy**: PCR-direction root, momentum veto only when `momentumEnabled`, LegManager tree (target, hard square-off, adverse ladder hedge/average, refill, capital/max-profit/max-loss latches)
 - **SimpleContinuousStrategy**: one root/day, resting sell at +`priceDiff`, one-time hedge chain, `onePositionPerSide` / `maxLegsPerSide` stacking rules, first-profit restart, locked-price max-profit
 - **ScaledHedgedStrategy**: Simple variant with scaled hedge size, one CE/one PE contract per cycle, `maxInvestment` on every buy
-- **ExperimentalScaledStrategy**: ScaledHedged copy (disabled; add `slDistance` to activate): re-buy sized from the opposite open leg, add at the target instead of sell + re-buy on the same contract, stop at average - slDistance (see docs/guides/strategies.md)
+- **ExperimentalScaledStrategy**: ScaledHedged copy (disabled) with Rule 1 only: a same-direction re-buy after a target fill is sized from the opposite open leg (initialQuantity when none is open); no add mode, no stop (see docs/guides/strategies.md)
 - **SupportResistanceStrategy**: S/R breach (held-duration filter) via LegManager, shared max-profit latch; detector tuning read from the top-level `srHypothesis` config block
 - **HourlyStrategy**: hourly S/R breakout confirmed on 10-min candle, entry next candle open, resting target + invalidation stop, multi-broker
 - **GoodMorningStrategy / GoodMorningSensexStrategy**: 09:15 vs previous close, 09:20 confirm, retry with persisted time shift, GTT bracket exit, self-rearm (NIFTY)

@@ -500,7 +500,6 @@ strategies:
     maxInvestment: 200000
     maxProfit: 5000
     priceDiff: 10
-    # slDistance (points) must be set by the user to activate add mode (add at the target instead of sell + re-buy, stop at average - slDistance); without it this block behaves like ScaledHedgedStrategy.
 forecast:
   company:
     name: Karthikeyan S

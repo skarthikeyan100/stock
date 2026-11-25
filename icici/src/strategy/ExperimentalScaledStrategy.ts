@@ -1,29 +1,16 @@
-// ExperimentalScaledStrategy: a COPY of ScaledHedgedStrategy (ScaledHedgedStrategy itself is unchanged) with the differences below. Its own `name`, log
-// prefix, state file (.ExperimentalScaledStrategy.<userId>.json) and config type; everything not listed here is exactly ScaledHedgedStrategy (rules A-G
-// described further down, max-profit realized + unrealized latch, overall lock, never-short guard, enabled:false semantics, hedge waiting, one open leg per
-// contract / per side, unconfirmed-buy settling, EOD close, reconcile places no order).
+// ExperimentalScaledStrategy: a COPY of ScaledHedgedStrategy (ScaledHedgedStrategy itself is unchanged) with ONE difference (Rule 1). Its own `name`, log
+// prefix, state file (.ExperimentalScaledStrategy.<userId>.json) and config type; everything else is exactly ScaledHedgedStrategy (rules A-G described
+// further down: resting sell at entry + priceDiff, sell and re-buy, max-profit realized + unrealized latch, overall lock, never-short guard, enabled:false
+// semantics, hedge waiting, one open leg per contract / per side, unconfirmed-buy settling, EOD close, reconcile places no order).
 //
-// DIFFERENCES vs ScaledHedgedStrategy
+// THE SINGLE DIFFERENCE vs ScaledHedgedStrategy
 //   RULE 1 (quantity of a same-direction re-buy after a target fill, hedge(leg, reason, same = true)): `initialQuantity` ONLY when no leg of the OPPOSITE
 //      right is open. When an opposite-right leg is open its scale formula is used (initialQuantity + (opposite.entry - opposite.lastLtp) / priceDiff *
 //      initialQuantity, whole lots, never below initialQuantity, capped at the freeze quantity) fed THAT open leg (one open leg per side, so it is
 //      unambiguous). maxInvestment (capQuantity) still cuts it. Adverse-move / loss hedges (opposite direction) keep the ScaledHedgedStrategy formula on the
 //      parent leg; rule 1 never applies to them.
-//   RULE 2 (add instead of sell + re-buy on the SAME contract): once a leg's target is reached (LTP >= leg.entry + priceDiff, entry being the blended
-//      average) and the follow-up that would happen is a same-direction buy of the same contract, the leg is NOT sold: the rule-1 quantity is bought and booked
-//      onto the leg (bookAdd: blended entry, pnlRef blend, `added`), so the target and the stop move to the new average. Such a leg (`addMode`) gets NO resting
-//      sell at all (placeSell / placeShortfall / placeSellQty and the reconcile sellShortfall path skip it). The same-direction follow-up cases are: (a) the
-//      target-met re-buy of the fixed pair contract of the leg's right (leg not hedged, the pair contract of that right is the leg's own contract), and (b) the
-//      rule-E restart (a root that is a never-added, never-hedged first order) when the contract selection (PCR direction, premium floor, ATM pick) would pick
-//      the same contract again. In every other case (a different contract is selected, or the leg already is hedged so nothing follows it) the leg leaves add
-//      mode (addMode = false), its resting sell at entry + priceDiff is placed and the ScaledHedgedStrategy flow runs (sell at the target, new leg).
-//   THE STOP (only with slDistance > 0): a tick-driven exit of the WHOLE leg when LTP <= (blended average - slDistance): the resting sell (if any) is cancelled and
-//      the quantity sold at market; the loss is booked as a normal close by the fill event (copied from SimpleContinuousStrategy.slDistance() / stopLossExit(),
-//      not imported). afterLegClosed then runs as in ScaledHedgedStrategy (a loss buys the opposite right).
-//   THE GATE: add mode is active only while the block has slDistance > 0 (points, read from the config on every tick). With slDistance absent / 0 the class behaves
-//      exactly like ScaledHedgedStrategy: resting sell at entry + priceDiff, sell and re-buy, no stop, rule 2 off. (Rule 1 is not gated: it is a quantity rule of the
-//      same-direction re-buy and applies with or without slDistance.)
-//   STATE: SimpleLeg.addMode (persisted) marks a leg created while the gate was on; with the gate off a leg's addMode is ignored and its resting sell is placed.
+//   NO STOP and NO ADD MODE: the class sells at entry + priceDiff through the resting sell and re-buys exactly like ScaledHedgedStrategy; `slDistance` has no
+//      effect here.
 //
 import { NonFiniteAlert, profitTotalOf, shouldTrip } from './finiteGuard';
 import * as fs from 'fs';
@@ -112,7 +99,6 @@ const DOUBLE_RETRY_MS = 30_000;
 const WAITING_HEDGE_RETRY_MS = 5_000;
 const PENDING_HEDGE_RETRY_MS = 30_000; // poll of a recorded unconfirmed hedge / add buy (the cancel notification settles it at once)
 const EOD_RETRY_MS = 5_000;
-const ADD_RETRY_MS = 5_000; // throttle of the target add / rule-E selection attempts of one leg
 const DEFAULT_STACK_RECOVERY_POINTS = 20;
 
 type Right = 'CE' | 'PE';
@@ -144,7 +130,6 @@ export interface SimpleLeg {
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
     cancelSell?: boolean;   // reconcile found this leg gone from the order side while a resting sell was recorded for it: that sell is cancelled from the tick path (a reconcile never trades)
     restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
-    addMode?: boolean;      // created while slDistance > 0: no resting sell, the target ADDS to the leg (rule 2); ignored while the gate is off
     added?: boolean;        // a later buy of the same contract was added to this leg (blended entry); the leg is no longer a never-hedged first order
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
     // The hedge buy (or the add buy `addToLegId`) of this leg was UNCONFIRMED (timeout / cancel failed / broker unreadable) and may be live. `hedged` stays
@@ -184,8 +169,6 @@ export default class ExperimentalScaledStrategy extends Strategy {
     private lastStrandedCancel = 0;
     private lastWaitingHedgeRetry = 0;
     private lastDoubleAttempt = new Map<string, number>();
-    private lastAddAttempt = new Map<string, number>();
-    private slSentAt = new Map<string, number>(); // leg id -> when its stop-loss sell was last sent (in-memory throttle only: the fill event closes the leg)
     private gateLog = new GateLogger('[ExperimentalScaledStrategy] gate:', PCR_RECHECK_MS);
 
     constructor(userId?: string) {
@@ -208,18 +191,6 @@ export default class ExperimentalScaledStrategy extends Strategy {
 
     private priceDiff(): number {
         return Number(this.cfg()?.priceDiff);
-    }
-
-    // slDistance (points, optional): the stop is at (blended average - slDistance) and add mode (rule 2) is active only while it is > 0.
-    // Absent / 0 / not a positive number = ScaledHedgedStrategy behaviour. (Copied from SimpleContinuousStrategy.slDistance().)
-    private slDistance(): number {
-        const v = Number(this.cfg()?.slDistance);
-        return Number.isFinite(v) && v > 0 ? v : 0;
-    }
-
-    // The leg has no resting sell and its target adds to it: created in add mode and the gate (slDistance > 0) is still on.
-    private isAddLeg(leg: SimpleLeg): boolean {
-        return leg.addMode === true && this.slDistance() > 0;
     }
 
     // maxProfit (rupees) is required in the block or as settings.maxProfit: no default here. Missing / not a positive number blocks every new entry (see the gate in
@@ -458,8 +429,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 leg.sellQty = pending.reduce((s, p) => s + Number(p.quantity || 0), 0);
                 if (leg.sellQty > 0 && !leg.sellPrice) leg.sellPrice = roundToTick(leg.entry + this.priceDiff());
                 // Some of the leg rests but not all of it (2026-11-11: a clamped placement after a double-up left 325 of 650 resting): the rest is placed from ticks.
-                // An add-mode leg has no resting sell by design: no shortfall, nothing is placed for it (a sell found resting is only recorded).
-                leg.sellShortfall = !this.isAddLeg(leg) && leg.sellQty > 0 && leg.sellQty < this.remaining(leg) ? this.remaining(leg) - leg.sellQty : 0;
+                leg.sellShortfall = leg.sellQty > 0 && leg.sellQty < this.remaining(leg) ? this.remaining(leg) - leg.sellQty : 0;
                 if (leg.sellShortfall > 0) Log.log(`[ExperimentalScaledStrategy] ALERT: reconcile: ${leg.tsym} holds ${this.remaining(leg)} but only ${leg.sellQty} rests as a sell - placing the other ${leg.sellShortfall} from ticks`);
             } catch (e) {
                 Log.log(`[ExperimentalScaledStrategy] reconcile: could not read pending sells for ${leg.tsym}; assuming none rest:`, e);
@@ -624,7 +594,6 @@ export default class ExperimentalScaledStrategy extends Strategy {
             id: this.newLegId(), tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, role,
             parentId, entry: price, qty: filled, soldQty: 0, soldValue: 0, hedged, doubled: false, status: 'open', sellQty: 0, sellPrice: 0,
             ...(this.lastNiftyLtp > 0 ? { niftyAt: this.lastNiftyLtp } : {}),
-            ...(this.slDistance() > 0 ? { addMode: true } : {}),
         };
         this.state.legs[leg.id] = leg;
         this.watch(leg);
@@ -721,7 +690,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
     }
 
     private async placeSell(leg: SimpleLeg): Promise<void> {
-        if (leg.status !== 'open' || this.busy.has(leg.id) || this.isAddLeg(leg)) return; // an add-mode leg rests no sell (rule 2)
+        if (leg.status !== 'open' || this.busy.has(leg.id)) return;
         const quantity = this.remaining(leg);
         if (quantity <= 0) return;
         this.busy.add(leg.id);
@@ -757,7 +726,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
 
     // Places the quantity of a leg that has no resting sell while others rest (sellShortfall). Capped at what the leg still holds.
     private async placeShortfall(leg: SimpleLeg): Promise<void> {
-        if (leg.status !== 'open' || this.busy.has(leg.id) || this.isAddLeg(leg)) return;
+        if (leg.status !== 'open' || this.busy.has(leg.id)) return;
         const quantity = Math.min(leg.sellShortfall ?? 0, this.remaining(leg));
         if (quantity <= 0) { leg.sellShortfall = 0; return; }
         this.busy.add(leg.id);
@@ -801,138 +770,16 @@ export default class ExperimentalScaledStrategy extends Strategy {
         if (this.isStopped()) return;
         await this.checkMaxProfit();
         if (this.isStopped()) return;
-        const sl = this.slDistance();
-        if (sl > 0 && quote.ltp <= leg.entry - sl) { await this.stopLossExit(leg, sl); return; }
-        // Rule 2: an add-mode leg whose price reached its (blended) target is added to instead of sold (or leaves add mode and sells as ScaledHedgedStrategy does).
-        if (this.isAddLeg(leg) && quote.ltp >= leg.entry + this.priceDiff()) await this.targetAdd(leg);
         // A leg whose sell never got placed (placement failed, or a restart found none resting) is retried.
-        if (leg.status === 'open' && !this.isAddLeg(leg) && leg.sellQty === 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
+        if (leg.sellQty === 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
             await this.placeSell(leg);
-        } else if (leg.status === 'open' && !this.isAddLeg(leg) && (leg.sellShortfall ?? 0) > 0 && leg.sellQty > 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
+        } else if ((leg.sellShortfall ?? 0) > 0 && leg.sellQty > 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
             await this.placeShortfall(leg);
         }
-        if (leg.status === 'open' && !leg.hedged && quote.ltp <= leg.entry - this.priceDiff()) {
+        if (!leg.hedged && quote.ltp <= leg.entry - this.priceDiff()) {
             await this.hedge(leg, 'adverse move');
         }
     };
-
-    // ---- rule 2: add at the target, stop at average - slDistance ----
-
-    // Stop loss of one leg (copied from SimpleContinuousStrategy.stopLossExit): cancel its resting sell(s) (an add-mode leg has none) and sell what is left at market,
-    // on the WHOLE quantity. The leg stays open until the sell's fill event closes it (bookSell books the loss into realizedPnl and the maxProfit total and
-    // afterLegClosed buys the opposite right). A sell already sent waits TRIP_FILL_WAIT_MS for that event; after that the sell is repeated, and the broker's
-    // 'nothing sellable' refusal closes a leg that is no longer held (closeIfNotHeld). A failure is retried on the next tick after SELL_RETRY_MS.
-    private async stopLossExit(leg: SimpleLeg, sl: number): Promise<void> {
-        if (leg.status !== 'open' || this.busy.has(leg.id)) return;
-        const sent = this.slSentAt.get(leg.id);
-        if (sent !== undefined && Date.now() - sent < TRIP_FILL_WAIT_MS) return;
-        this.busy.add(leg.id);
-        try {
-            if (leg.sellQty > 0 || (leg.sellShortfall ?? 0) > 0) {
-                const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
-                if (res.cancelFailed) { this.slSentAt.set(leg.id, Date.now() - TRIP_FILL_WAIT_MS + SELL_RETRY_MS); Log.log(`[ExperimentalScaledStrategy] STOP LOSS: could not cancel the resting sell of ${leg.tsym}, retrying`); return; }
-                leg.sellQty = 0;
-                leg.sellShortfall = 0;
-                this.save();
-                if (res.filledQty > 0) { this.slSentAt.set(leg.id, Date.now()); Log.log(`[ExperimentalScaledStrategy] STOP LOSS: ${res.filledQty} of ${leg.tsym} sold while cancelling the resting sell - the rest is handled after its fill events`); return; }
-            }
-            const quantity = this.remaining(leg);
-            if (quantity <= 0) return;
-            Log.log(`[ExperimentalScaledStrategy] STOP LOSS: ${leg.tsym} ${leg.lastLtp} <= average ${leg.entry.toFixed(2)} - slDistance ${sl}: selling ${quantity} at market`);
-            await chunkedLegSell(this.userId, leg.tsym, quantity, this.broker());
-            this.slSentAt.set(leg.id, Date.now());
-        } catch (e) {
-            if (await this.closeIfNotHeld(leg, e)) return;
-            if (isCoveredByOthers(e)) { this.waitCovered(leg, this.remaining(leg)); return; }
-            this.slSentAt.set(leg.id, Date.now() - TRIP_FILL_WAIT_MS + SELL_RETRY_MS); // a failed attempt is repeated after SELL_RETRY_MS, not on every tick
-            Log.log(`[ExperimentalScaledStrategy] ALERT: STOP LOSS sell of ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
-        } finally {
-            this.busy.delete(leg.id);
-        }
-    }
-
-    // The rule-E restart would run the contract selection again: does it pick this leg's contract (same right, same strike)? null = could not be decided now.
-    private async restartPicksSameContract(leg: SimpleLeg): Promise<boolean | null> {
-        if (!(this.lastNiftyLtp > 0)) return null;
-        const right = await this.direction(Object.assign(new NiftyQuote(), { ltp: this.lastNiftyLtp }));
-        if (right == null) return null;
-        if (right !== leg.right) return false;
-        const ops = brokerLegOps(() => this.cfg()?.broker);
-        const contract = await ops.pickContract(this.userId, this.lastNiftyLtp, right, ROOT_MIN_PREMIUM, [], expiryDayOverrideOf(this.cfg()));
-        return String(contract.token) === leg.token;
-    }
-
-    // An add-mode leg reached entry + priceDiff (entry = blended average). If what would follow its sale is a same-direction buy of the SAME contract, that
-    // quantity (rule 1) is bought and added to the leg instead (no sell). Otherwise the leg leaves add mode, its resting sell is placed and the
-    // ScaledHedgedStrategy flow (sell at the target, new leg) runs. Throttled per leg (ADD_RETRY_MS); every buy guard of hedge() applies (enabled, buysBlocked,
-    // stopped, reconcile-blocked, busy slot, pendingSides, maxInvestment).
-    private async targetAdd(leg: SimpleLeg): Promise<void> {
-        if (leg.status !== 'open' || this.busy.has(leg.id) || !this.enabled || this.buysBlocked() || this.isStopped() || this.blocked) return;
-        if (leg.pendingHedge || leg.sellQty > 0 || this.slSentAt.has(leg.id) || this.pendingSides.size > 0) return;
-        if (Date.now() - (this.lastAddAttempt.get(leg.id) ?? 0) < ADD_RETRY_MS) return;
-        this.lastAddAttempt.set(leg.id, Date.now());
-        this.busy.add(leg.id); // synchronous, before any await
-        this.pendingSides.add(leg.right);
-        let leave = false;
-        try {
-            let sameContract: boolean | null;
-            if (!leg.hedged && !leg.hedgeWaiting && !leg.added && leg.role === 'root') sameContract = await this.restartPicksSameContract(leg); // rule E: first order, no hedge
-            else if (!leg.hedged) sameContract = this.state.pair?.[leg.right]?.token === leg.token; // target-met re-buy of the fixed pair contract of the right
-            else sameContract = false; // hedged: nothing same-direction follows its sale
-            if (sameContract === null) return; // undecidable now (PCR / contract lookup): retried
-            if (!sameContract) leave = true;
-            else await this.addBuy(leg);
-        } catch (e) {
-            Log.log(`[ExperimentalScaledStrategy] add at target of ${leg.tsym} failed, will retry:`, e);
-        } finally {
-            this.pendingSides.delete(leg.right);
-            this.busy.delete(leg.id);
-        }
-        if (leave && leg.status === 'open') {
-            leg.addMode = false;
-            this.save();
-            Log.log(`[ExperimentalScaledStrategy] ${leg.tsym} reached its target ${(leg.entry + this.priceDiff()).toFixed(2)} but the follow-up is not a same-direction buy of this contract: leaving add mode, resting sell placed (ScaledHedgedStrategy flow)`);
-            await this.placeSell(leg);
-        }
-    }
-
-    // The add buy of targetAdd: rule-1 quantity of the leg's own contract, cut by maxInvestment, booked with bookAdd. Caller holds the leg's busy slot and the side.
-    private async addBuy(leg: SimpleLeg): Promise<void> {
-        const premium = Number(leg.lastLtp) > 0 ? Number(leg.lastLtp) : leg.entry;
-        const contract = { tradingSymbol: leg.tsym, token: leg.token, exchange: leg.exchange, strike: leg.strike, premium };
-        const wanted = this.rebuyQuantity(leg.right);
-        const qty = this.capQuantity(wanted, contract);
-        if (qty <= 0) {
-            if (!this.capHeld.has(leg.id)) { this.capHeld.add(leg.id); Log.log(`[ExperimentalScaledStrategy] add to ${leg.tsym} held back: maxInvestment ${this.cfg()?.maxInvestment} leaves no room for one lot (open cost ${Math.round(this.invested())})`); }
-            return;
-        }
-        this.capHeld.delete(leg.id);
-        if (qty < wanted) Log.log(`[ExperimentalScaledStrategy] add quantity of ${leg.tsym} cut ${wanted} -> ${qty} by maxInvestment`);
-        const heldBefore = this.remaining(leg);
-        let got = 0;
-        let price = premium;
-        try {
-            const trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, premium, this.broker());
-            got = Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
-            price = Number(trade.price) > 0 ? Number(trade.price) : premium;
-        } catch (e) {
-            if (this.noteBuyError(e, `add buy ${contract.tradingSymbol}`, false)) { Log.log('[ExperimentalScaledStrategy] add buy failed (not placed, will retry):', e); return; }
-            Log.log(`[ExperimentalScaledStrategy] add buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
-            const res = await this.resolveUnconfirmedBuy(contract, heldBefore);
-            if (res.kind === 'none') { Log.log(`[ExperimentalScaledStrategy] add buy of ${contract.tradingSymbol} was cancelled with 0 filled - retried`); return; }
-            if (res.kind === 'unknown') {
-                // Recorded on the leg itself (addToLegId = its own id): settled from the broker by settlePendingHedges (booked with bookAdd), also after a restart. No buy meanwhile.
-                leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right: leg.right, premium, qty, addToLegId: leg.id, heldBefore, at: Date.now() };
-                Log.log(`[ExperimentalScaledStrategy] ALERT: add buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - recorded as pending on ${leg.tsym}; no new buys until it is settled from the broker`);
-                this.save();
-                return;
-            }
-            got = res.qty;
-            price = res.price;
-        }
-        if (!(got > 0) || leg.status !== 'open') return;
-        this.bookAdd(leg, got, price, leg, `target reached, same-contract add instead of sell+re-buy`);
-    }
 
     // ---- hedge ----
 
@@ -1002,8 +849,8 @@ export default class ExperimentalScaledStrategy extends Strategy {
         return Math.min(Math.max(q, base), Math.floor(NIFTY_FREEZE_QUANTITY / lot) * lot);
     }
 
-    // Rule 1: the quantity of a same-direction buy of `right` (a re-buy after a target fill, or a rule-2 add): initialQuantity when no leg of the opposite right is
-    // open, else the scale formula fed that open opposite leg (one open leg per side, so there is at most one).
+    // Rule 1: the quantity of a same-direction re-buy of `right` after a target fill: initialQuantity when no leg of the opposite right is open, else the
+    // scale formula fed that open opposite leg (one open leg per side, so there is at most one).
     private rebuyQuantity(right: Right): number {
         const opp = this.openLegs().find((l) => l.right === opposite(right));
         return opp ? this.hedgeQuantity(opp) : Number(this.cfg()?.initialQuantity);
@@ -1300,12 +1147,12 @@ export default class ExperimentalScaledStrategy extends Strategy {
         parent.hedged = false; // re-armed from the new average
         parent.hedgeWaiting = false;
         this.save();
-        Log.log(`[ExperimentalScaledStrategy] added to ${parent.tsym}: +${got} @${price} (${trigger.tsym}: ${reason}), now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
+        Log.log(`[ExperimentalScaledStrategy] added to ${parent.tsym}: +${got} @${price} (${trigger.tsym} fell ${this.priceDiff()}: ${reason}), now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
     }
 
     // placeSell for a given quantity while the caller already holds the leg's busy slot.
     private async placeSellQty(leg: SimpleLeg, quantity: number): Promise<void> {
-        if (quantity <= 0 || leg.status !== 'open' || this.isAddLeg(leg)) return;
+        if (quantity <= 0 || leg.status !== 'open') return;
         const price = roundToTick(leg.entry + this.priceDiff());
         try {
             const res = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
