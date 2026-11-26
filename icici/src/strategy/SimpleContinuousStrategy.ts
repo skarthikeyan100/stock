@@ -7,7 +7,7 @@ import { Strategy } from './strategy';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
-import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
+import { brokerLegOps, chunkedLegSell, PartialSellError } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
 import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution } from './unconfirmedBuy';
 import { bookPlatformSoldLegs } from './platformSells';
@@ -32,7 +32,7 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //      every later order is a hedge. With `onePositionPerSide: true` `initialQuantity` is IGNORED: the root buys as many whole
 //      lots as the free part of `maxInvestment` pays for at the picked premium (capped at the NIFTY freeze quantity).
 //   2. Right after the fill a resting limit sell is placed at entry + priceDiff.
-//   3. EVERY leg (root or hedge) is hedged exactly once, by buying the opposite option at the strike nearest the money for the same quantity, either when its price
+//   3. EVERY leg (root or hedge) is hedged exactly once (a stopped leg also gets rule 4b's buy), by buying the opposite option at the strike nearest the money for the same quantity, either when its price
 //      falls to entry - priceDiff (adverse) or when its resting sell fills (target met, at the then-current price). The hedge buy is a
 //      leg of its own with its own resting sell at its entry + priceDiff, and it is hedged once in turn, so the chain is unlimited.
 //      A leg whose sell fills at a profit is followed by the SAME right (follow the direction), root and hedge legs alike; a hedge
@@ -40,7 +40,19 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   4. Stop loss (`slDistance`, points, optional; absent / 0 = none, a leg then ends only through its resting sell or the EOD close): when ANY leg's
 //      price falls to entry - slDistance it is exited (its resting sell is cancelled and the rest sold at market) and the loss is booked through
 //      the normal fill path (realizedPnl / the maxProfit total). The hedge of a falling leg is bought at entry - priceDiff and then follows the
-//      normal chain (it sells at its own entry + priceDiff, the next one is bought, ...); the stop only removes the falling leg.
+//      normal chain (it sells at its own entry + priceDiff, the next one is bought, ...).
+//   4b. A STOPPED leg adds to the opposite side (2026-11-26, user's request; "stopped" = exited by the slDistance stop, nothing else: not a max-profit
+//      or EOD close, lock-profits, a disable or an outside sale). When the leg closes, the quantity the stop sold (fills below the leg's target price,
+//      booked after the stop sell was sent; `stopSold`) is bought on the opposite right: ADDED to the open leg on that side (the newest one if several),
+//      whatever its strike, else a new hedge leg at the strike nearest the money. It applies to every stop, also to a leg that had already been hedged,
+//      and it is the stopped leg's only follow-up (a held-back or never-bought hedge of it is not bought as well). Add: the open leg's resting sell is
+//      cancelled (confirmed, and the order side must still hold the whole leg), the quantity bought, the leg's entry blended over what it holds and ONE
+//      sell placed for the new total at the new entry + priceDiff; when nothing is bought the old sell is put back. The open leg's `hedged` /
+//      `hedgeWaiting` are left as they are (an un-hedged one is later hedged for its new quantity, from its new entry). maxInvestment does not gate it
+//      (as every hedge). It waits while that side has a buy in flight, the target leg is busy or being stopped, or buys are blocked; a refused buy is
+//      retried (30 s, doubling to 5 min), insufficient funds is reported once and never retried (rule 12; a leg already marked `noFunds` gets none). Max profit / EOD / a disabled strategy at the
+//      time the close is booked: no buy; a buy still queued at a max-profit trip or EOD is dropped. Persisted: `stopBuy` (queued), `stopFlight` (order
+//      out; becomes `pendingHedge` after a restart) - one buy per stop, also across a restart; a reconcile only queues it.
 //   5. NO double-up (removed 2026-11-13, user's decision; ScaledHedgedStrategy has had none since 1a3c54e): a hedge leg whose sell fills at a
 //      profit buys nothing for its parent. A leg restored from a state file written before that (fields `doubled` / `doubleDue`, a quantity
 //      above the root rule's, e.g. 1170) is carried unchanged: those fields are ignored, `doubleDue: true` triggers no buy, its quantity is
@@ -49,8 +61,8 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //      together, reaches it, every open leg is closed and the strategy stays idle for the rest of the day (persisted in the state file). The
 //      total is measured from the start of counting (first load of a state file without the fields, or reset()), not from the morning: a leg
 //      that was already open then is valued from its first tick after it (`pnlRef`), so it does not carry its earlier P&L into the total.
-//   6. maxInvestment (per broker) gates the root only. Hedge buys ignore it (a hedge refused by the cap would leave a
-//      leg unprotected).
+//   6. maxInvestment (per broker) gates the root only. Hedge buys (and the stop's opposite buy, 4b) ignore it (a hedge refused by the cap would
+//      leave a leg unprotected).
 //   7. Stacking limits, two modes:
 //      - `onePositionPerSide: true` (config flag, off by default): at most ONE open leg per side. A CE and a PE may coexist, but while a CE is
 //        open no other CE order (hedge) is placed, likewise PE. The hedge waits un-placed (leg stays un-hedged, retried every 5 s) until the
@@ -66,7 +78,7 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //      `restarted`, the one-root gate opens and the contract selection runs again for a new root.
 //   11. Last leg closed (stop loss or target) with a stale `hedged` flag and nothing open / waiting / in flight (2026-11-25): it is hedged again from that
 //      leg (loss: opposite right, profit: same right), so the chain never dies behind the one-root gate.
-//   12. A buy refused for INSUFFICIENT FUNDS / MARGIN (2026-11-26, insufficientFunds.ts) is reported with one ALERT and never retried: a hedge leaves its leg
+//   12. A buy refused for INSUFFICIENT FUNDS / MARGIN (2026-11-26, insufficientFunds.ts) is reported with one ALERT and never retried: a hedge (or stop follow-up buy) leaves its leg
 //      marked `noFunds` (no further buy for that leg or from the chain behind it), a root sets `rootNoFunds` (no root for the rest of the day; reset() re-arms).
 //      Every other refusal is retried as before. Resting sells, the stop loss and the exits are unaffected.
 // State (hedged / quantities) is kept per day in a JSON file and checked against the broker's open trades at reconcile.
@@ -75,6 +87,8 @@ const PCR_RECHECK_MS = 5 * 60 * 1000;
 const ROOT_MIN_PREMIUM = 100; // ContinuousStrategy's default; there is deliberately no config key for it
 const SELL_RETRY_MS = 10_000;
 const WAITING_HEDGE_RETRY_MS = 5_000;
+const STOP_BUY_RETRY_MS = 30_000;      // a stop's opposite buy that was refused / could not be placed: next try, doubling up to the maximum
+const STOP_BUY_RETRY_MAX_MS = 300_000; // (each try on an open leg takes its resting sell off and puts it back)
 const PENDING_HEDGE_RETRY_MS = 30_000; // poll of a recorded unconfirmed hedge buy (the cancel notification settles it at once)
 const EOD_RETRY_MS = 5_000;
 const DEFAULT_STACK_RECOVERY_POINTS = 20;
@@ -111,11 +125,24 @@ export interface SimpleLeg {
     noFunds?: boolean;      // this leg's hedge buy was refused for insufficient funds: reported, never retried (`hedged` stays true)
     restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
+    added?: boolean;        // a stop's opposite buy was added to this leg (blended entry); the leg is no longer a never-hedged first order
+    // Stop follow-up (rule 4b), all persisted.
+    stopSent?: boolean;     // a stop-loss market sell was sent for this leg (saved before it goes out); cleared when it was definitely not placed or a resting sell covers the leg again
+    stopSold?: number;      // quantity the stop has sold
+    stopBuy?: number;       // closed leg: quantity still to be bought on the opposite right
+    stopFlight?: PendingBuy; // closed leg: that buy is being placed now (saved before the order goes out; after a restart it is settled as pendingHedge)
     // The hedge buy of this leg was UNCONFIRMED (timeout / cancel failed / broker unreadable) and may be live. `hedged` stays true meanwhile (no second
     // buy) and every buy of the strategy waits; the record is settled against the broker (cancelled with 0 filled -> `hedged` cleared and the hedge retried
     // through hedgeWaiting; filled -> adopted as the hedge child, never bought again). Persisted, so it survives a restart and a manual-review reset
     // (2026-11-25 Breeze L12: the flag stayed true with no hedge leg after the restart cleared the in-memory latch, so the leg hung unhedged).
-    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; same: boolean; at: number; noFunds?: string };
+    pendingHedge?: PendingBuy;
+}
+
+// One buy made for a leg whose outcome is not yet booked. `addToLegId`: it adds to that open leg (the stop's opposite buy); `stopBuy`: it is the
+// stop follow-up of the leg holding the record (cancelled unfilled -> queued again); `heldBefore`: what the target leg held before it.
+export interface PendingBuy {
+    tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; same: boolean; at: number;
+    noFunds?: string; addToLegId?: string; stopBuy?: boolean; heldBefore?: number;
 }
 
 interface State { day: string; legs: Record<string, SimpleLeg>; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean;
@@ -147,6 +174,10 @@ export default class SimpleContinuousStrategy extends Strategy {
     private busy = new Set<string>();           // leg ids with a hedge / sell placement in flight
     private lastSellAttempt = new Map<string, number>();
     private slSentAt = new Map<string, number>(); // leg id -> when its stop-loss sell was last sent (in-memory throttle only: the fill event closes the leg)
+    private hedging = new Set<string>();        // leg ids whose own hedge buy is in flight (it records its pendingHedge on that leg)
+    private stopBuying = new Set<string>();     // stopped leg ids whose opposite buy is being placed
+    private stopBuyRetry = new Map<string, { at: number; failures: number }>(); // stopped leg id -> earliest next try
+    private lastStopBuyPass = 0;
     private lastEodAttempt = 0;
     private lastWaitingHedgeRetry = 0;
     private gateLog = new GateLogger(`${this.tag} gate:`, PCR_RECHECK_MS);
@@ -234,6 +265,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (!shouldTrip(this.userId, total, cap, this.nonFiniteAlert)) return; // total >= cap, and only for a finite total (NaN must not trip)
         this.state.profitTripped = true; // synchronous, before any await: only one caller runs the close
         this.save();
+        this.dropStopBuys('max profit tripped');
         Log.log(`${this.tag} MAX PROFIT TRIPPED - total=${Math.round(total)} threshold=${cap} (realized=${Math.round(this.state.realizedPnl)}) - closing every open leg of ${this.userId}, no new orders for the rest of the day`);
         await this.closeAllLegs('MAX PROFIT');
     }
@@ -270,6 +302,13 @@ export default class SimpleContinuousStrategy extends Strategy {
             if (carried.length > 0) this.state.carried = carried;
         }
         this.rolloverCheck = this.checkCarried();
+        // A stop's opposite buy that was in flight when the process stopped may be live or filled: it is settled from the broker like any unconfirmed buy.
+        for (const leg of Object.values(this.state.legs)) {
+            if (!leg.stopFlight) continue;
+            Log.log(`${this.tag} ALERT: the stop follow-up buy of ${leg.stopFlight.qty} ${leg.stopFlight.tsym} (stop of ${leg.tsym}) was in flight at the last shutdown - settling it from the broker`);
+            leg.pendingHedge = leg.stopFlight;
+            leg.stopFlight = undefined;
+        }
         for (const leg of this.openLegs()) this.watch(leg);
     }
 
@@ -286,11 +325,11 @@ export default class SimpleContinuousStrategy extends Strategy {
                 remaining: l.qty - l.soldQty, accounted: l.status === 'closed' ? l.qty : l.soldQty, record: l,
                 alert: `${l.tsym} from ${old.day} was still open when the day rolled over - check the broker position by hand`,
             };
-            const p = l.pendingHedge;
+            const p = l.pendingHedge ?? l.stopFlight;
             if (!p) return [leg];
             return [leg, {
                 kind: 'pendingBuy' as const, broker, tsym: p.tsym, open: true, remaining: p.qty, accounted: 0, record: { ...p, legId: l.id },
-                alert: `an unconfirmed hedge buy of ${p.qty} ${p.tsym} (recorded on leg ${l.id} ${l.tsym}) was never settled before the day rolled over from ${old.day} - whether it filled is not known: check the broker's order book, trade book and position by hand`,
+                alert: `an unconfirmed ${p.addToLegId ? 'add' : 'hedge'} buy of ${p.qty} ${p.tsym} (recorded on leg ${l.id} ${l.tsym}) was never settled before the day rolled over from ${old.day} - whether it filled is not known: check the broker's order book, trade book and position by hand`,
             }];
         });
     }
@@ -388,7 +427,12 @@ export default class SimpleContinuousStrategy extends Strategy {
         await bookPlatformSoldLegs({
             tag: this.helperTag, userId: this.userId, broker: this.brokerOrKite(),
             legs: Object.values(this.state.legs),
-            gone: this.openLegs().filter((leg) => { const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym); return !t || !(Number(t.quantity) > 0); }),
+            // Also a leg still held in part after a stop sell (the stop's fills count towards the opposite buy), and one with an unsettled add (a target
+            // fill of what it held before must be booked before the add is settled). Nothing is booked when there is no unseen sell of the platform.
+            gone: this.openLegs().filter((leg) => {
+                const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym);
+                return !t || !(Number(t.quantity) > 0) || (!!leg.stopSent && Number(t.quantity) < this.remaining(leg)) || this.pendingAddOn(leg.id);
+            }),
             seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null, partQty: this.state.sellQtys,
             markSeen: (ids) => this.noteSeenSells(ids),
             book: (leg, qty, price) => this.bookPlatformSell(leg, qty, price),
@@ -401,6 +445,8 @@ export default class SimpleContinuousStrategy extends Strategy {
                 this.closeOutside(leg, 'reconcile');
                 continue;
             }
+            // The broker quantity includes an add that is still unsettled: it is booked by settlePendingHedges, never folded into the leg here.
+            if (this.pendingAddOn(leg.id) && Number(t.quantity) > this.remaining(leg)) { this.watch(leg); continue; }
             if (Number(t.quantity) < this.remaining(leg)) {
                 // Partly sold outside the platform (a sell in the broker's app, booked by the sync): the leg continues with what is held.
                 Log.log(`${this.tag} ALERT: reconcile: ${leg.tsym} holds ${Number(t.quantity)} of the ${this.remaining(leg)} recorded - ${this.remaining(leg) - Number(t.quantity)} was sold outside the platform, continuing with the held quantity (its P&L is not in this strategy's realizedPnl)`);
@@ -510,6 +556,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (!this.enabled) { this.gateLog.log('disabled'); return; }
         await this.settlePendingHedges(false); // an unconfirmed hedge buy is settled even at EOD / after the max-profit trip / during a manual review
         if (this.isStopped()) {
+            this.dropStopBuys(this.isEod() ? 'end of day' : 'max profit tripped');
             if (Date.now() - this.lastEodAttempt > EOD_RETRY_MS) {
                 this.lastEodAttempt = Date.now();
                 await this.closeAllLegs(this.isEod() ? 'EOD' : 'MAX PROFIT');
@@ -519,6 +566,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (!this.isTimeInRange()) { this.gateLog.log('outside time window'); return; }
         if (this.buysBlocked()) { this.gateLog.log('manual review / unconfirmed hedge buy pending'); return; }
         if (this.blocked || !this.stateLoaded) { this.gateLog.log('state not loaded / open trades unreadable'); return; }
+        await this.retryStopBuys();
         await this.retryWaitingHedges();
         if (this.entering) return;
         const cfg = this.cfg();
@@ -621,6 +669,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         const ref = leg.pnlRefPending ? price : (leg.pnlRef ?? leg.entry);
         this.state.realizedPnl += qty * (price - ref);
         noteRestingFilled(leg, qty);
+        this.noteStopFill(leg, qty, price);
         leg.soldQty += qty;
         leg.soldValue += qty * price;
         if (leg.soldQty < leg.qty) return; // the rest is closed neutral by the caller (no platform sell behind it)
@@ -629,6 +678,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         leg.sellShortfall = 0;
         leg.hedgeWaiting = false;
         this.unwatch(leg);
+        this.queueStopBuy(leg);
         const avgSell = leg.soldValue / leg.soldQty;
         const pnl = (avgSell - leg.entry) * leg.qty;
         this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
@@ -643,11 +693,13 @@ export default class SimpleContinuousStrategy extends Strategy {
     // the sync booked carry the real P&L; booking it again here would double count it) and the leg's open value leaves the total with it.
     private closeOutside(leg: SimpleLeg, why: string): void {
         Log.log(`${this.tag} ALERT: ${why}: ${leg.tsym} (${this.remaining(leg)} left to sell) is no longer held by the broker - closed outside the platform, marking the leg closed (neutral P&L, not added to realizedPnl)`);
+        if (leg.stopSent && this.remaining(leg) > 0) Log.log(`${this.tag} ALERT: ${why}: a stop-loss sell had been sent for ${leg.tsym}, but no sell of the platform's own explains the ${this.remaining(leg)} left - no opposite buy for that quantity${leg.stopSold ? ` (only for the ${leg.stopSold} the stop is known to have sold)` : ''}; check the broker's trade book`);
         leg.status = 'closed';
         leg.sellQty = 0;
         leg.sellShortfall = 0;
         leg.hedgeWaiting = false;
         this.unwatch(leg);
+        this.queueStopBuy(leg);
         this.save();
     }
 
@@ -671,7 +723,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             Log.log(`${this.tag} ${why}: could not look up the platform's own sells of ${leg.tsym}:`, e);
         }
         if ((leg.status as string) === 'closed') {
-            leg.hedgeWaiting = hedgeWaiting; // bookPlatformSell clears it (a reconcile places nothing); a live close keeps it as updateTrade does
+            if (!(Number(leg.stopSold) > 0)) leg.hedgeWaiting = hedgeWaiting; // bookPlatformSell clears it (a reconcile places nothing); a live close keeps it as updateTrade does (a stopped leg's follow-up is its stop buy)
             this.save();
             await this.afterLegClosed(leg);
             return;
@@ -697,10 +749,19 @@ export default class SimpleContinuousStrategy extends Strategy {
     }
 
     private async placeSell(leg: SimpleLeg): Promise<void> {
-        if (leg.status !== 'open' || this.busy.has(leg.id)) return;
-        const quantity = this.remaining(leg);
-        if (quantity <= 0) return;
+        if (leg.status !== 'open' || this.busy.has(leg.id) || this.remaining(leg) <= 0) return;
         this.busy.add(leg.id);
+        try {
+            await this.restSell(leg);
+        } finally {
+            this.busy.delete(leg.id);
+        }
+    }
+
+    // The resting sell of everything the leg holds, for a caller that holds the leg's busy slot.
+    private async restSell(leg: SimpleLeg): Promise<void> {
+        const quantity = this.remaining(leg);
+        if (leg.status !== 'open' || quantity <= 0) return;
         this.lastSellAttempt.set(leg.id, Date.now());
         const price = roundToTick(leg.entry + this.priceDiff());
         this.placing.set(leg.id, { qty: quantity, price });
@@ -716,7 +777,6 @@ export default class SimpleContinuousStrategy extends Strategy {
             Log.log(`${this.tag} ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
             this.placing.delete(leg.id);
-            this.busy.delete(leg.id);
         }
     }
 
@@ -730,6 +790,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         leg.sellShortfall = requested - got;
         leg.sellPrice = price;
         noteRestingPlaced(leg, got, price, false);
+        if (got >= this.remaining(leg)) leg.stopSent = false; // the whole leg rests again: no stop sell is out
         this.save();
         Log.log(`${this.tag} resting sell ${leg.tsym} qty=${got} @${price}`);
         if (got < requested) Log.log(`${this.tag} ALERT: only ${got}/${requested} of ${leg.tsym} placed as a resting sell (clamped by the broker's guard) - placing the other ${requested - got} from ticks`);
@@ -787,6 +848,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (this.isStopped()) return;
         const sl = this.slDistance();
         if (sl > 0 && quote.ltp <= leg.entry - sl) { await this.stopLossExit(leg, sl); return; }
+        if (this.stopInFlight(leg)) return; // a stop sell is out: no resting sell (it would sell the leg twice) or hedge until its fill events had their time
         // A leg whose sell never got placed (placement failed, or a restart found none resting) is retried.
         if (leg.sellQty === 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
             await this.placeSell(leg);
@@ -807,6 +869,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         const sent = this.slSentAt.get(leg.id);
         if (sent !== undefined && Date.now() - sent < TRIP_FILL_WAIT_MS) return;
         this.busy.add(leg.id);
+        const sentBefore = !!leg.stopSent; // an earlier attempt that may have sold
         try {
             if (leg.sellQty > 0 || (leg.sellShortfall ?? 0) > 0) {
                 const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
@@ -819,15 +882,292 @@ export default class SimpleContinuousStrategy extends Strategy {
             const quantity = this.remaining(leg);
             if (quantity <= 0) return;
             Log.log(`${this.tag} STOP LOSS: ${leg.tsym} ${leg.lastLtp} <= entry ${leg.entry.toFixed(2)} - slDistance ${sl}: selling ${quantity} at market`);
+            leg.stopSent = true; // saved before the order goes out: its fills (also ones booked by a reconcile after a restart) are the stop's
+            this.save();
             await chunkedLegSell(this.userId, leg.tsym, quantity, this.broker());
             this.slSentAt.set(leg.id, Date.now());
         } catch (e) {
             if (await this.closeIfNotHeld(leg, e)) return;
+            const nothingPlaced = !(e instanceof PartialSellError) && (isCoveredByOthers(e) || String((e as any)?.message ?? e).includes(NOT_PLACED_TAG));
+            if (nothingPlaced && !sentBefore && leg.stopSent) { leg.stopSent = false; this.save(); }
             if (isCoveredByOthers(e)) { this.waitCovered(leg, this.remaining(leg)); return; }
             this.slSentAt.set(leg.id, Date.now() - TRIP_FILL_WAIT_MS + SELL_RETRY_MS); // a failed attempt is repeated after SELL_RETRY_MS, not on every tick
             Log.log(`${this.tag} ALERT: STOP LOSS sell of ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
             this.busy.delete(leg.id);
+        }
+    }
+
+    // ---- stop follow-up (rule 4b) ----
+
+    // A stop sell was sent for this open leg and its fill events may still be on the way.
+    private stopInFlight(leg: SimpleLeg): boolean {
+        return leg.status === 'open' && !!leg.stopSent && Date.now() - (this.slSentAt.get(leg.id) ?? 0) < TRIP_FILL_WAIT_MS;
+    }
+
+    // Counts a Sell fill towards the stop's quantity, before it is added to soldQty: a stop sell was sent and the price is below the leg's target
+    // (a resting sell never fills below it, so a target fill racing the stop is not counted).
+    private noteStopFill(leg: SimpleLeg, qty: number, price: number): void {
+        if (!leg.stopSent) return;
+        const target = roundToTick(leg.entry + this.priceDiff());
+        const resting = leg.sellPrice > 0 ? Math.min(leg.sellPrice, target) : target;
+        if (!(price < resting - 0.001)) return;
+        leg.stopSold = (leg.stopSold ?? 0) + Math.max(0, Math.min(qty, this.remaining(leg)));
+    }
+
+    // Called in the same synchronous step that closes a leg (saved with it): what the stop sold is queued as the opposite buy, and that is the leg's
+    // only follow-up.
+    private queueStopBuy(leg: SimpleLeg): void {
+        const qty = leg.stopSold ?? 0;
+        if (!(qty > 0)) return;
+        leg.hedged = true; // a hedge held back or never bought for this leg is not bought beside the stop's buy
+        leg.hedgeWaiting = false;
+        const off = !this.enabled ? 'the strategy is disabled' : this.isStopped() ? 'max profit tripped / end of day' : leg.noFunds ? 'a buy for this leg was already refused for insufficient funds' : '';
+        if (off) { Log.log(`${this.tag} STOP FOLLOW-UP: ${leg.tsym} was stopped (${qty}) - no ${opposite(leg.right)} buy: ${off}`); return; }
+        leg.stopBuy = qty;
+        Log.log(`${this.tag} STOP FOLLOW-UP: ${leg.tsym} was stopped (${qty}) - ${qty} ${opposite(leg.right)} to be bought`);
+    }
+
+    private dropStopBuys(why: string): void {
+        const due = Object.values(this.state.legs).filter((l) => Number(l.stopBuy) > 0);
+        for (const leg of due) {
+            Log.log(`${this.tag} STOP FOLLOW-UP: the ${opposite(leg.right)} buy of ${leg.stopBuy} for the stop of ${leg.tsym} is dropped: ${why}`);
+            leg.stopBuy = undefined;
+        }
+        if (due.length) this.save();
+    }
+
+    private async retryStopBuys(): Promise<void> {
+        if (Date.now() - this.lastStopBuyPass < WAITING_HEDGE_RETRY_MS) return;
+        this.lastStopBuyPass = Date.now();
+        for (const leg of Object.values(this.state.legs)) {
+            if (Number(leg.stopBuy) > 0) await this.buyForStop(leg);
+        }
+    }
+
+    private delayStopBuy(legId: string): void {
+        const failures = this.stopBuyRetry.get(legId)?.failures ?? 0;
+        this.stopBuyRetry.set(legId, { at: Date.now() + Math.min(STOP_BUY_RETRY_MS * 2 ** failures, STOP_BUY_RETRY_MAX_MS), failures: failures + 1 });
+    }
+
+    // The opposite buy of a stopped leg: added to the newest open leg on that side, else a new leg. Waits (retried from Nifty ticks) while it cannot run.
+    private async buyForStop(leg: SimpleLeg): Promise<void> {
+        if (!(Number(leg.stopBuy) > 0) || !this.enabled) return;
+        await this.checkMaxProfit(); // a trip (also one caused by booking the stop) drops it
+        const quantity = Number(leg.stopBuy);
+        if (!(quantity > 0) || leg.status !== 'closed' || !this.enabled) return;
+        if (this.isStopped()) { this.dropStopBuys('max profit tripped / end of day'); return; }
+        if (leg.noFunds) { // refused meanwhile (an unconfirmed hedge of this leg settled as refused): rule 12
+            leg.stopBuy = undefined;
+            this.save();
+            Log.log(`${this.tag} STOP FOLLOW-UP: no buy of ${quantity} for the stop of ${leg.tsym}: a buy for this leg was already refused for insufficient funds`);
+            return;
+        }
+        if (this.blocked || this.buysBlocked() || this.stopBuying.has(leg.id) || this.hedging.has(leg.id)) return;
+        if (Date.now() < (this.stopBuyRetry.get(leg.id)?.at ?? 0)) return;
+        const right = opposite(leg.right);
+        if (this.pendingSides.has(right)) return; // a buy on that side is in flight: add to its leg afterwards
+        const target = this.openLegs().filter((l) => l.right === right).pop(); // legs are kept in the order they were opened
+        const sl = this.slDistance();
+        // Never add to a leg that is being worked on or stopped itself: once it is gone a new leg is opened.
+        if (target && (this.busy.has(target.id) || this.remaining(target) <= 0 || (!!target.stopSent && target.sellQty === 0) || (sl > 0 && Number(target.lastLtp) > 0 && Number(target.lastLtp) <= target.entry - sl))) return;
+        // Claimed synchronously, before any await.
+        this.stopBuying.add(leg.id);
+        this.pendingSides.add(right);
+        if (target) this.busy.add(target.id);
+        try {
+            if (target) await this.addForStop(leg, target, quantity);
+            else await this.openForStop(leg, right, quantity);
+        } catch (e) {
+            this.delayStopBuy(leg.id);
+            Log.log(`${this.tag} STOP FOLLOW-UP: the ${right} buy for the stop of ${leg.tsym} failed, retrying:`, e);
+        } finally {
+            this.stopBuying.delete(leg.id);
+            this.pendingSides.delete(right);
+            if (target) { this.busy.delete(target.id); this.keepFollowUp(target); }
+        }
+    }
+
+    // A leg whose sell filled while its busy slot was held for an add had its follow-up skipped (hedge() leaves a busy leg alone): queued as a held-back hedge.
+    private keepFollowUp(leg: SimpleLeg): void {
+        if (this.isStopped() || leg.status !== 'closed' || leg.hedged || leg.hedgeWaiting || !(leg.soldQty >= leg.qty) || !(leg.soldValue > 0)) return;
+        const same = leg.soldValue / leg.soldQty > leg.entry;
+        if (same && leg.role === 'root' && !leg.added) { leg.hedged = true; leg.restarted = true; }
+        else { leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = 0; }
+        this.save();
+    }
+
+    private async openForStop(leg: SimpleLeg, right: Right, quantity: number): Promise<void> {
+        if (!(this.lastNiftyLtp > 0)) return; // no spot yet to pick the strike from
+        const ops = brokerLegOps(() => this.cfg()?.broker);
+        const contract = await ops.pickContract(this.userId, this.lastNiftyLtp, right, 1, this.excludeStrikes(right), expiryDayOverrideOf(this.cfg()));
+        if (!this.enabled || this.buysBlocked() || this.isStopped() || this.openLegs().some((l) => l.right === right)) return; // changed while picking: the next pass decides again
+        const flight: PendingBuy = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: quantity, same: false, at: Date.now(), stopBuy: true };
+        const bought = await this.placeStopBuy(leg, flight);
+        if (!bought) return;
+        leg.stopFlight = undefined; // saved by addLeg together with the new leg
+        const newLeg = this.addLeg(bought, contract, right, 'hedge', false, leg.id);
+        Log.log(`${this.tag} STOP FOLLOW-UP: bought ${newLeg.tsym} qty=${newLeg.qty} @${newLeg.entry} for the stop of ${leg.tsym}`);
+        if (!this.isStopped()) await this.placeSell(newLeg); // when stopped the close-all path sells it
+    }
+
+    // The caller holds the target's busy slot.
+    private async addForStop(leg: SimpleLeg, target: SimpleLeg, quantity: number): Promise<void> {
+        if (!(await this.takeSellOff(target))) { this.delayStopBuy(leg.id); return; }
+        if (this.enabled && !this.buysBlocked() && !this.isStopped()) {
+            const premium = Number(target.lastLtp) > 0 ? Number(target.lastLtp) : target.entry;
+            const flight: PendingBuy = { tsym: target.tsym, token: target.token, exchange: target.exchange, strike: target.strike, right: target.right, premium, qty: quantity, same: false, at: Date.now(), stopBuy: true, addToLegId: target.id, heldBefore: this.remaining(target) };
+            const bought = await this.placeStopBuy(leg, flight);
+            if (bought) {
+                if (target.status === 'open') this.bookStopAdd(leg, target, Number(bought.quantity), Number(bought.price) > 0 ? Number(bought.price) : premium);
+                else {
+                    leg.stopFlight = undefined;
+                    const newLeg = this.addLeg(bought, { tradingSymbol: flight.tsym, token: flight.token, exchange: flight.exchange, strike: flight.strike, premium }, flight.right, 'hedge', false, leg.id);
+                    Log.log(`${this.tag} STOP FOLLOW-UP: ${target.tsym} closed while the buy was out - ${newLeg.qty} @${newLeg.entry} held as a new leg`);
+                    if (!this.isStopped()) await this.placeSell(newLeg);
+                    return;
+                }
+            }
+        }
+        // One sell for everything the leg holds now: the new total after an add, the old quantity when nothing was bought. Stopped: the close-all path sells.
+        if (!this.isStopped()) await this.restSell(target);
+    }
+
+    // Cancels the open leg's resting sell ahead of an add. False = do not buy now: a sell of the leg has filled (or may have) and is not booked yet, or
+    // the cancel failed. Nothing is placed here in that case; a leg left without a resting sell gets it from its own ticks after SELL_RETRY_MS, once the
+    // fill events had their time.
+    private async takeSellOff(leg: SimpleLeg): Promise<boolean> {
+        const holdsAll = async () => {
+            const held = await heldQuantity(this.userId, leg.token, leg.tsym);
+            return leg.status === 'open' && held !== undefined && held >= this.remaining(leg);
+        };
+        if (!(await holdsAll())) {
+            Log.log(`${this.tag} STOP FOLLOW-UP: add to ${leg.tsym} waits - the order side does not show the whole leg as held`);
+            return false;
+        }
+        let res: { filledQty: number; cancelFailed: boolean };
+        try {
+            res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
+        } catch (e) {
+            Log.log(`${this.tag} STOP FOLLOW-UP: cancelling the resting sell of ${leg.tsym} failed:`, e);
+            res = { filledQty: 0, cancelFailed: true };
+        }
+        if (res.cancelFailed) {
+            await this.resyncResting(leg); // some of it may have been cancelled: whatever no longer rests is placed again from the leg's ticks
+            Log.log(`${this.tag} STOP FOLLOW-UP: could not cancel the resting sell of ${leg.tsym}, the add is retried`);
+            return false;
+        }
+        leg.sellQty = 0;
+        leg.sellShortfall = 0;
+        this.lastSellAttempt.set(leg.id, Date.now());
+        this.save();
+        if (res.filledQty > 0 || !(await holdsAll())) {
+            Log.log(`${this.tag} STOP FOLLOW-UP: add to ${leg.tsym} waits - ${res.filledQty > 0 ? `${res.filledQty} sold while cancelling its resting sell` : 'the order side does not show the whole leg as held after the cancel'}`);
+            return false;
+        }
+        return true;
+    }
+
+    // Takes the leg's resting quantity from the order side's pending sells; unreadable leaves the record as it is.
+    private async resyncResting(leg: SimpleLeg): Promise<void> {
+        try {
+            const pending = await OrderClient.getInstance().getPendingSells(this.userId, this.brokerOrKite(), leg.tsym);
+            leg.resting = restingFromPending(leg, pending);
+            leg.sellQty = pending.reduce((s, p) => s + Number(p.quantity || 0), 0);
+            leg.sellShortfall = leg.sellQty > 0 ? Math.max(0, this.remaining(leg) - leg.sellQty) : 0;
+            this.lastSellAttempt.set(leg.id, Date.now());
+            this.save();
+        } catch (e) {
+            Log.log(`${this.tag} could not read the resting sells of ${leg.tsym}:`, e);
+        }
+    }
+
+    // Places the stop's buy (any size: the order side splits it at the freeze quantity). Returns what was bought, still recorded as in flight so the
+    // caller books it and clears the record in one step; undefined = nothing to book (queued again, given up, or recorded as pending).
+    private async placeStopBuy(leg: SimpleLeg, flight: PendingBuy): Promise<Trade | undefined> {
+        leg.stopFlight = flight;
+        leg.stopBuy = undefined;
+        this.save();
+        const notBought = (e: unknown, why: string): undefined => {
+            leg.stopFlight = undefined;
+            if (isInsufficientFunds(e)) { this.giveUpHedge(leg, flight.tsym, e); return undefined; }
+            this.requeueStopBuy(leg, flight.qty);
+            Log.log(`${this.tag} STOP FOLLOW-UP: buy of ${flight.qty} ${flight.tsym} ${why}, will retry:`, e);
+            return undefined;
+        };
+        let trade: Trade;
+        try {
+            trade = await OrderClient.getInstance().buyContractBare(this.userId, flight.tsym, flight.token, flight.qty, flight.exchange, flight.premium, this.broker(), { hedgeRebuy: true });
+            if (!(Number(trade?.quantity) > 0)) throw new Error('the buy returned no filled quantity');
+        } catch (e) {
+            if (this.noteBuyError(e, `stop follow-up buy ${flight.tsym}`, false)) return notBought(e, 'failed (not placed)');
+            Log.log(`${this.tag} stop follow-up buy of ${flight.tsym} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
+            const res = await this.resolveUnconfirmedBuy({ tradingSymbol: flight.tsym, premium: flight.premium }, flight.heldBefore ?? 0);
+            if (res.kind === 'none') return notBought(e, 'was cancelled with 0 filled');
+            if (res.kind === 'unknown') {
+                leg.stopFlight = undefined;
+                leg.pendingHedge = { ...flight, ...(isInsufficientFunds(e) ? { noFunds: String((e as any)?.message ?? e) } : {}) };
+                this.save();
+                Log.log(`${this.tag} ALERT: stop follow-up buy ${flight.tsym} may be live at the broker (${res.why}) - recorded as pending on ${leg.tsym}; no new buys until it is settled from the broker`);
+                return undefined;
+            }
+            trade = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
+        }
+        this.stopBuyRetry.delete(leg.id);
+        if (Number(trade.quantity) < flight.qty) Log.log(`${this.tag} ALERT: stop follow-up buy ${flight.tsym}: only ${trade.quantity} of ${flight.qty} bought - the rest is not bought again`);
+        return trade;
+    }
+
+    private requeueStopBuy(leg: SimpleLeg, quantity: number): void {
+        leg.stopBuy = quantity;
+        this.delayStopBuy(leg.id);
+        this.save();
+        if (this.isStopped()) this.dropStopBuys('max profit tripped / end of day');
+    }
+
+    // Books `got` bought for the stop of `leg` onto the open leg `target`: entry (and the maxProfit reference) blended over what it holds.
+    private bookStopAdd(leg: SimpleLeg, target: SimpleLeg, got: number, price: number): void {
+        if (target.soldQty > 0) { target.qty = this.remaining(target); target.soldQty = 0; target.soldValue = 0; } // what was sold is booked already
+        if (target.pnlRefPending) { target.pnlRef = price; target.pnlRefPending = false; }
+        else if (target.pnlRef != null) target.pnlRef = (target.pnlRef * target.qty + price * got) / (target.qty + got);
+        target.entry = (target.entry * target.qty + price * got) / (target.qty + got);
+        target.qty += got;
+        target.added = true;
+        leg.stopFlight = undefined;
+        this.save();
+        Log.log(`${this.tag} STOP FOLLOW-UP: added to ${target.tsym}: +${got} @${price} for the stop of ${leg.tsym}, now qty=${this.remaining(target)} avg=${target.entry.toFixed(2)}`);
+    }
+
+    private pendingAddOn(legId: string): boolean {
+        return Object.values(this.state.legs).some((l) => l.pendingHedge?.addToLegId === legId);
+    }
+
+    // An add recorded as unconfirmed turned out to be filled: booked onto its still open leg, whose sell is re-placed for the new total.
+    private async settleStopAdd(leg: SimpleLeg, target: SimpleLeg, qty: number, price: number): Promise<void> {
+        this.busy.add(target.id); // the caller checked it is free, with no await since
+        try {
+            let cancelled: { filledQty: number; cancelFailed: boolean } | undefined;
+            if (!this.isStopped() && target.sellQty > 0) {
+                cancelled = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: target.tsym, broker: this.brokerOrKite() });
+                if (!cancelled.cancelFailed) { target.sellQty = 0; target.sellShortfall = 0; }
+            }
+            if (target.status !== 'open') { // sold while the cancel ran: the added quantity is held on its own
+                leg.pendingHedge = undefined; // saved by addLeg together with the new leg
+                const newLeg = this.addLeg(Object.assign(new Trade(), { quantity: qty, price }), { tradingSymbol: target.tsym, token: target.token, exchange: target.exchange, strike: target.strike, premium: price }, target.right, 'hedge', false, leg.id);
+                if (!this.isStopped()) await this.placeSell(newLeg);
+                return;
+            }
+            leg.pendingHedge = undefined; // saved by bookStopAdd together with the add
+            this.bookStopAdd(leg, target, qty, price);
+            // An old sell still resting (cancel failed / stopped): the rest of the leg is its shortfall, placed from ticks or by the close-all path.
+            if (target.sellQty > 0) { target.sellShortfall = Math.max(0, this.remaining(target) - target.sellQty); this.save(); return; }
+            if (this.isStopped()) return;
+            this.lastSellAttempt.set(target.id, Date.now());
+            const held = await heldQuantity(this.userId, target.token, target.tsym);
+            if (!(cancelled && cancelled.filledQty > 0) && held !== undefined && held >= this.remaining(target)) await this.restSell(target); // else: from its ticks, once the fills are booked
+        } finally {
+            this.busy.delete(target.id);
+            this.keepFollowUp(target);
         }
     }
 
@@ -890,21 +1230,40 @@ export default class SimpleContinuousStrategy extends Strategy {
     private async settlePendingHedges(force: boolean, onlyTsym?: string): Promise<void> {
         for (const leg of Object.values(this.state.legs)) {
             const p = leg.pendingHedge;
-            if (!p || (onlyTsym && p.tsym !== onlyTsym) || this.busy.has(leg.id) || this.settling.has(leg.id)) continue;
+            if (!p || (onlyTsym && p.tsym !== onlyTsym) || this.busy.has(leg.id) || this.settling.has(leg.id) || this.stopBuying.has(leg.id)) continue;
+            if (p.addToLegId && this.busy.has(p.addToLegId)) continue;
             if (!force && Date.now() - (this.lastPendingSettle.get(leg.id) ?? 0) < PENDING_HEDGE_RETRY_MS) continue;
             this.lastPendingSettle.set(leg.id, Date.now());
             this.settling.add(leg.id);
             try {
-                const res = await this.resolveUnconfirmedBuy({ tradingSymbol: p.tsym, premium: p.premium });
+                // An add: only what is held beyond the open legs' own quantity of the contract (their booked sells already taken off) is the buy.
+                const heldByLegs = p.addToLegId ? this.openLegs().filter((l) => l.tsym === p.tsym).reduce((s, l) => s + this.remaining(l), 0) : 0;
+                const res = await this.resolveUnconfirmedBuy({ tradingSymbol: p.tsym, premium: p.premium }, heldByLegs);
                 if (leg.pendingHedge !== p) continue; // settled / reset meanwhile
-                if (res.kind === 'unknown') { Log.log(`${this.tag} pending hedge buy ${p.tsym} of ${leg.tsym} still unresolved (${res.why}) - retrying`); continue; }
+                const kind = p.addToLegId ? 'add' : 'hedge';
+                if (res.kind === 'unknown') { Log.log(`${this.tag} pending ${kind} buy ${p.tsym} of ${leg.tsym} still unresolved (${res.why}) - retrying`); continue; }
+                const target = p.addToLegId ? this.state.legs[p.addToLegId] : undefined;
+                if (res.kind === 'filled' && target && target.status === 'open') {
+                    // The record stays until the step that books the add; a busy target, or one whose stop sell is out, is booked on a later pass.
+                    if (!this.busy.has(target.id) && !this.stopInFlight(target)) await this.settleStopAdd(leg, target, res.qty, res.price);
+                    continue;
+                }
                 leg.pendingHedge = undefined;
                 if (res.kind === 'none') {
                     if (p.noFunds) { this.giveUpHedge(leg, p.tsym, p.noFunds); continue; }
-                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = p.same;
+                    if (p.stopBuy) {
+                        this.stopBuyRetry.delete(leg.id);
+                        leg.stopBuy = p.qty;
+                        this.lastStopBuyPass = 0; // retried on the next Nifty tick
+                        this.save();
+                        Log.log(`${this.tag} pending ${kind} buy ${p.tsym} was cancelled with 0 filled - the stop follow-up of ${leg.tsym} will retry`);
+                        if (this.isStopped()) this.dropStopBuys('max profit tripped / end of day');
+                        continue;
+                    }
+                    this.rearmHedge(leg, p.same);
                     this.lastWaitingHedgeRetry = 0; // retried on the next Nifty tick
                     this.save();
-                    Log.log(`${this.tag} pending hedge buy ${p.tsym} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
+                    Log.log(`${this.tag} pending hedge buy ${p.tsym} was cancelled with 0 filled - ${leg.hedged ? `${leg.tsym} has been stopped out, its stop follow-up replaces it` : `hedge flag of ${leg.tsym} cleared, will retry`}`);
                     continue;
                 }
                 const adopted = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
@@ -935,9 +1294,17 @@ export default class SimpleContinuousStrategy extends Strategy {
         Log.log(`${this.tag} ALERT: root buy ${tsym} (${this.userId}) refused for insufficient funds - not retried today (reset re-arms): ${(e as any)?.message ?? e}`);
     }
 
+    // A hedge that was not bought is due again - unless the leg has meanwhile been stopped out: the stop's opposite buy is then its only follow-up.
+    private rearmHedge(leg: SimpleLeg, same: boolean): void {
+        if (leg.status === 'closed' && Number(leg.stopSold) > 0) return;
+        leg.hedged = false;
+        leg.hedgeWaiting = true;
+        leg.hedgeSame = same;
+    }
+
     // `same`: follow the leg's direction (buy the same right) instead of the opposite one - used when the leg closed at a profit.
     private async hedge(leg: SimpleLeg, reason: string, same = false): Promise<void> {
-        if (leg.hedged || this.busy.has(leg.id) || !this.enabled || this.buysBlocked() || this.isStopped()) return;
+        if (leg.hedged || this.busy.has(leg.id) || !this.enabled || this.buysBlocked() || this.isStopped() || this.stopInFlight(leg)) return;
         const right = same ? leg.right : opposite(leg.right);
         if (this.sideBlocked(right)) {
             // Stacking guard / side occupied: leave the leg un-hedged. An open leg is retried by its own ticks, a closed one from Nifty ticks.
@@ -953,6 +1320,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         leg.hedged = true; // synchronous, before any await: a second tick must not buy a second hedge
         if (this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
         this.busy.add(leg.id);
+        this.hedging.add(leg.id);
         this.save();
         try {
             const ops = brokerLegOps(() => this.cfg()?.broker);
@@ -965,7 +1333,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
                     if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
-                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
+                    this.rearmHedge(leg, same); this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
                     Log.log(`${this.tag} hedge buy failed (not placed, will retry):`, e);
                     this.save();
                     return;
@@ -975,7 +1343,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
                     if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
-                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
+                    this.rearmHedge(leg, same); this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
                     Log.log(`${this.tag} hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     this.save();
                     return;
@@ -1001,12 +1369,13 @@ export default class SimpleContinuousStrategy extends Strategy {
             await this.placeSell(hedgeLeg);
         } catch (e) {
             // pickContract failed before any order: allow a retry.
-            leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // a closed leg gets no option ticks: the Nifty-tick retry picks this up
+            this.rearmHedge(leg, same); this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // a closed leg gets no option ticks: the Nifty-tick retry picks this up
             this.save();
             Log.log(`${this.tag} hedge contract lookup failed, will retry:`, e);
         } finally {
             this.pendingSides.delete(right);
             this.busy.delete(leg.id);
+            this.hedging.delete(leg.id);
         }
     }
 
@@ -1034,6 +1403,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         const ref = leg.pnlRefPending ? fillPrice : (leg.pnlRef ?? leg.entry);
         this.state.realizedPnl += qty * (fillPrice - ref);
         noteRestingFilled(leg, qty);
+        this.noteStopFill(leg, qty, fillPrice);
         leg.soldQty += qty;
         leg.soldValue += qty * Number(trade.price);
         if (leg.soldQty < leg.qty) { this.save(); return undefined; } // chunked sell: the rest is still resting
@@ -1045,6 +1415,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         const pnl = (avgSell - leg.entry) * leg.qty;
         this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
         Log.log(`${this.tag} ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
+        this.queueStopBuy(leg);
         this.save();
         return () => this.afterLegClosed(leg);
     }
@@ -1066,11 +1437,13 @@ export default class SimpleContinuousStrategy extends Strategy {
     private async afterLegClosed(leg: SimpleLeg): Promise<void> {
         const avgSell = leg.soldValue / leg.soldQty;
         await this.checkMaxProfit();
+        // A stopped leg: the opposite buy of the stopped quantity is its only follow-up (rule 4b).
+        if (Number(leg.stopSold) > 0) { await this.buyForStop(leg); return; }
         if (this.isStopped()) return;
         // Closed at a profit: follow the direction (buy the same right again); closed at a loss: buy the opposite right. An adverse-move
         // hedge (the leg still open, the "stop" case) is always the opposite right. Fixed behaviour, deliberately not configurable.
         const same = avgSell > leg.entry;
-        if (!leg.hedged && !leg.hedgeWaiting && leg.role === 'root' && same) {
+        if (!leg.hedged && !leg.hedgeWaiting && leg.role === 'root' && !leg.added && same) { // `added`: quantity was added to it, so it is hedged like any leg
             // The very first order made its target before any hedge was needed: do NOT buy the same direction again. It is marked hedged (nothing
             // follows it) and `restarted`, so the root gate opens and the next Nifty tick runs the contract selection (PCR direction, premium floor,
             // ATM pick) again for a fresh root.
@@ -1098,7 +1471,7 @@ export default class SimpleContinuousStrategy extends Strategy {
     // No open leg, no hedge waiting to be placed and no hedge buy in flight: with the one-root-per-day gate shut nothing could ever place another order.
     private chainDead(): boolean {
         if (this.openLegs().length > 0 || this.pendingSides.size > 0) return false;
-        return !Object.values(this.state.legs).some((l) => (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge); // a recorded unconfirmed hedge buy is settled, not re-bought
+        return !Object.values(this.state.legs).some((l) => (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge || Number(l.stopBuy) > 0 || !!l.stopFlight); // a recorded unconfirmed hedge buy is settled, not re-bought
     }
 
     onOrderCancelled = async (n: OrderCancelledNotification): Promise<void> => {
@@ -1309,7 +1682,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         // Opens the one-root gate: closed roots (e.g. closed by the MAX PROFIT lock) are marked `restarted` so the contract selection runs again for a
         // new root. Never while the chain is live: any open leg (a root or a hedge; a second root would make two live chains) or a closed leg whose
         // hedge is still held back (hedgeWaiting) keeps the gate shut. The new root sizes from the free part of maxInvestment (invested() = open legs).
-        const live = Object.values(this.state.legs).filter((l) => l.status === 'open' || (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge);
+        const live = Object.values(this.state.legs).filter((l) => l.status === 'open' || (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge || Number(l.stopBuy) > 0 || !!l.stopFlight);
         const reopened = live.length > 0 ? [] : Object.values(this.state.legs).filter((l) => l.role === 'root' && l.status === 'closed' && !l.restarted);
         for (const l of reopened) { l.restarted = true; l.hedged = true; l.hedgeWaiting = false; } // hedged: nothing follows the closed root
         // A human reset after a stop (max-profit trip / EOD): the closed leaves that were never hedged are deliberate chain ends, not lost follow-ups (scheduleLostFollowUp must not revive them).
@@ -1318,6 +1691,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         else if (live.length) Log.log(`${this.tag} reset: root gate left as is, ${live.length} live/pending leg(s): ${live.map((l) => l.tsym).join(', ')}`);
         this.state.rootNoFunds = false;
         this.save();
+        this.stopBuyRetry.clear();
         this.manualReview = false;
         this.entering = false;
         this.busy.clear();
