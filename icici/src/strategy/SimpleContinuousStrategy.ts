@@ -13,6 +13,7 @@ import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyRes
 import { bookPlatformSoldLegs } from './platformSells';
 import { carryOver, reportCarried, CarriedBatch, CarriedInput } from './dayRollover';
 import { lostFollowUp } from './chainFollowUp';
+import { isInsufficientFunds } from './insufficientFunds';
 import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
@@ -64,6 +65,9 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //      `restarted`, the one-root gate opens and the contract selection runs again for a new root.
 //   11. Last leg closed (stop loss or target) with a stale `hedged` flag and nothing open / waiting / in flight (2026-11-25): it is hedged again from that
 //      leg (loss: opposite right, profit: same right), so the chain never dies behind the one-root gate.
+//   12. A buy refused for INSUFFICIENT FUNDS / MARGIN (2026-11-26, insufficientFunds.ts) is reported with one ALERT and never retried: a hedge leaves its leg
+//      marked `noFunds` (no further buy for that leg or from the chain behind it), a root sets `rootNoFunds` (no root for the rest of the day; reset() re-arms).
+//      Every other refusal is retried as before. Resting sells, the stop loss and the exits are unaffected.
 // State (hedged / quantities) is kept per day in a JSON file and checked against the broker's open trades at reconcile.
 
 const PCR_RECHECK_MS = 5 * 60 * 1000;
@@ -102,16 +106,18 @@ export interface SimpleLeg {
     doubleDue?: boolean; // LEGACY (double-up removed 2026-11-13): ignored, never triggers a buy
     pnlRef?: number;        // price the maxProfit total values this leg from (a legacy double-up blended it); absent = its entry
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
+    noFunds?: boolean;      // this leg's hedge buy was refused for insufficient funds: reported, never retried (`hedged` stays true)
     restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
     // The hedge buy of this leg was UNCONFIRMED (timeout / cancel failed / broker unreadable) and may be live. `hedged` stays true meanwhile (no second
     // buy) and every buy of the strategy waits; the record is settled against the broker (cancelled with 0 filled -> `hedged` cleared and the hedge retried
     // through hedgeWaiting; filled -> adopted as the hedge child, never bought again). Persisted, so it survives a restart and a manual-review reset
     // (2026-11-25 Breeze L12: the flag stayed true with no hedge leg after the restart cleared the in-memory latch, so the leg hung unhedged).
-    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; same: boolean; at: number };
+    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; same: boolean; at: number; noFunds?: string };
 }
 
 interface State { day: string; legs: Record<string, SimpleLeg>; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean;
+    rootNoFunds?: boolean; // the root buy was refused for insufficient funds: not retried today (reset() re-arms)
     // Broker order ids of the sells this strategy's fill handler (or a reconcile that attributed a platform sell) already booked. sellIdsTracked is set only on a state
     // created by code that records them: a state without it is legacy and its reconcile falls back to quantities (see platformSells.ts).
     sellIdsTracked?: boolean; seenSells?: string[];
@@ -400,7 +406,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         // before pendingHedge was recorded). State alone cannot tell them from a manual exit, so nothing is cleared (a wrong clear could buy a second
         // hedge): it is only reported. A recorded pendingHedge is the unambiguous case and is settled against the broker (settlePendingHedges).
         for (const leg of this.openLegs()) {
-            if (leg.hedged && !leg.pendingHedge && !leg.restarted && !Object.values(this.state.legs).some((l) => l.parentId === leg.id) && !this.openLegs().some((l) => l.right === opposite(leg.right))) {
+            if (leg.hedged && !leg.noFunds && !leg.pendingHedge && !leg.restarted && !Object.values(this.state.legs).some((l) => l.parentId === leg.id) && !this.openLegs().some((l) => l.right === opposite(leg.right))) {
                 Log.log(`[SimpleContinuousStrategy] ALERT: reconcile: ${leg.tsym} is open and marked hedged but has no hedge leg and no ${opposite(leg.right)} leg is open - check whether its hedge was ever filled (a strategy reset does not clear it; set hedged false in the state file to have it hedged on the next adverse move)`);
             }
         }
@@ -487,6 +493,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if ((!(qty > 0) && !this.onePerSide()) || !(maxInvestment > 0) || !(this.priceDiff() > 0) || !(this.maxProfit() > 0)) { this.gateLog.log('initialQuantity / maxInvestment / priceDiff / maxProfit not set'); return; }
         // One root per day: after it, every order is a hedge. Adopted legs count (reconcile gives them role 'root').
         // A root whose profit ended the first-order cycle (`restarted`) does not count: the selection starts over.
+        if (this.state.rootNoFunds) { this.gateLog.log('root buy refused for insufficient funds - not retried today (reset re-arms)'); return; }
         if (Object.values(this.state.legs).some((l) => l.role === 'root' && !l.restarted)) { this.gateLog.log('root already opened today'); return; }
 
         this.entering = true; // synchronous, before any await
@@ -527,10 +534,14 @@ export default class SimpleContinuousStrategy extends Strategy {
             trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
         } catch (e) {
             Log.log('[SimpleContinuousStrategy] root buy failed:', e);
-            if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) return; // definitely not placed: the next tick may try again
+            if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) { // definitely not placed: the next tick may try again, except for funds
+                if (isInsufficientFunds(e)) this.giveUpRoot(contract.tradingSymbol, e);
+                return;
+            }
             // Outcome unknown (IPC timeout / unconfirmed fill): settle it against the order side and the broker instead of parking the strategy.
             const res = await this.resolveUnconfirmedBuy(contract);
             if (res.kind === 'none') {
+                if (isInsufficientFunds(e)) { this.giveUpRoot(contract.tradingSymbol, e); return; }
                 Log.log(`[SimpleContinuousStrategy] root buy of ${contract.tradingSymbol} was cancelled with 0 filled - no position, a new root may be tried`);
                 return;
             }
@@ -845,6 +856,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 if (res.kind === 'unknown') { Log.log(`[SimpleContinuousStrategy] pending hedge buy ${p.tsym} of ${leg.tsym} still unresolved (${res.why}) - retrying`); continue; }
                 leg.pendingHedge = undefined;
                 if (res.kind === 'none') {
+                    if (p.noFunds) { this.giveUpHedge(leg, p.tsym, p.noFunds); continue; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = p.same;
                     this.lastWaitingHedgeRetry = 0; // retried on the next Nifty tick
                     this.save();
@@ -861,6 +873,22 @@ export default class SimpleContinuousStrategy extends Strategy {
                 this.settling.delete(leg.id);
             }
         }
+    }
+
+    // A buy refused for insufficient funds is reported once and never retried (see insufficientFunds.ts). The leg keeps `hedged` true, so no tick,
+    // retry or reconcile path buys for it again; its resting sell and exits are unaffected.
+    private giveUpHedge(leg: SimpleLeg, tsym: string, e: unknown): void {
+        leg.hedged = true;
+        leg.hedgeWaiting = false;
+        leg.noFunds = true;
+        this.save();
+        Log.log(`[SimpleContinuousStrategy] ALERT: hedge buy ${tsym} for ${leg.tsym} (${this.userId}) refused for insufficient funds - not retried: ${(e as any)?.message ?? e}`);
+    }
+
+    private giveUpRoot(tsym: string, e: unknown): void {
+        this.state.rootNoFunds = true;
+        this.save();
+        Log.log(`[SimpleContinuousStrategy] ALERT: root buy ${tsym} (${this.userId}) refused for insufficient funds - not retried today (reset re-arms): ${(e as any)?.message ?? e}`);
     }
 
     // `same`: follow the leg's direction (buy the same right) instead of the opposite one - used when the leg closed at a profit.
@@ -892,6 +920,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, leg.qty, contract.exchange, contract.premium, this.broker(), { hedgeRebuy: true });
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
+                    if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
                     Log.log('[SimpleContinuousStrategy] hedge buy failed (not placed, will retry):', e);
                     this.save();
@@ -901,6 +930,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 Log.log(`[SimpleContinuousStrategy] hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
+                    if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
                     Log.log(`[SimpleContinuousStrategy] hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     this.save();
@@ -909,7 +939,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 if (res.kind === 'unknown') {
                     // hedged stays true (no second buy) but the order is RECORDED: settled from the broker (cancelled -> hedged cleared and retried,
                     // filled -> adopted) by the cancel notification / the Nifty-tick poll, also after a restart or a manual-review reset. No buy meanwhile.
-                    leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: leg.qty, same, at: Date.now() };
+                    leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: leg.qty, same, at: Date.now(), ...(isInsufficientFunds(e) ? { noFunds: String((e as any)?.message ?? e) } : {}) };
                     Log.log(`[SimpleContinuousStrategy] ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - recorded as pending on ${leg.tsym}; no new buys until it is settled from the broker`);
                     this.save();
                     return;
@@ -1004,7 +1034,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             this.save();
             Log.log(`[SimpleContinuousStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
         } else if (!leg.hedged) await this.hedge(leg, 'target met', same);
-        else if (!leg.restarted && this.chainDead()) {
+        else if (!leg.restarted && !this.endedForFunds(leg) && this.chainDead()) {
             // The chain's last leg closed carrying a stale `hedged` flag (2026-11-25 Breeze: a hedge buy that was cancelled unfilled left it true with no hedge
             // leg; the stop loss then closed the last leg and nothing could ever be placed again - the one-root gate was shut and there was no leg to hedge from).
             // Nothing is open, waiting or in flight: clear the flag and hedge from this leg now (a loss buys the opposite right, a profit the same one, as above).
@@ -1013,6 +1043,11 @@ export default class SimpleContinuousStrategy extends Strategy {
             Log.log(`[SimpleContinuousStrategy] ${leg.tsym} closed as the last leg of the chain with a stale hedged flag and nothing open: continuing the cycle from it`);
             await this.hedge(leg, same ? 'target met' : 'stop loss', same);
         }
+    }
+
+    // This leg, or a leg bought after it, had its hedge refused for funds: the chain ended there on purpose, so no earlier leg continues it.
+    private endedForFunds(leg: SimpleLeg): boolean {
+        return !!leg.noFunds || Object.values(this.state.legs).some((l) => l.parentId === leg.id && this.endedForFunds(l));
     }
 
     // No open leg, no hedge waiting to be placed and no hedge buy in flight: with the one-root-per-day gate shut nothing could ever place another order.
@@ -1235,6 +1270,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         { const parents = new Set(Object.values(this.state.legs).map((l) => l.parentId).filter(Boolean)); for (const l of Object.values(this.state.legs)) if (l.status === 'closed' && !l.hedged && !l.hedgeWaiting && !l.pendingHedge && !parents.has(l.id)) l.hedged = true; }
         if (reopened.length) Log.log(`[SimpleContinuousStrategy] reset: closed root(s) ${reopened.map((l) => l.tsym).join(', ')} re-opened for selection (root gate open, new root allowed)`);
         else if (live.length) Log.log(`[SimpleContinuousStrategy] reset: root gate left as is, ${live.length} live/pending leg(s): ${live.map((l) => l.tsym).join(', ')}`);
+        this.state.rootNoFunds = false;
         this.save();
         this.manualReview = false;
         this.entering = false;

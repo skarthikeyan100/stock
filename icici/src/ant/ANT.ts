@@ -696,7 +696,10 @@ class ANT {
                 );
             }
             const status = Number(e.response.status);
-            if (status >= 400 && status < 500) throw markNotPlaced(e); // the broker answered with a rejection: nothing was placed
+            if (status >= 400 && status < 500) {
+                if (e.response.data) e.message = `${e.message}: ${JSON.stringify(e.response.data)}`; // the broker's reason: callers act on it (insufficient funds)
+                throw markNotPlaced(e); // the broker answered with a rejection: nothing was placed
+            }
             throw Object.assign(e, { ambiguousPlacement: true, orderMayBeLive: true }); // a 5xx may still have reached the matching engine
         }
         Log.log(`[ANT] ${label} response:`, JSON.stringify(resp.data));

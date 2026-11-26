@@ -29,6 +29,7 @@ import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyRes
 import { bookPlatformSoldLegs } from './platformSells';
 import { carryOver, reportCarried, CarriedBatch, CarriedInput } from './dayRollover';
 import { lostFollowUp } from './chainFollowUp';
+import { isInsufficientFunds } from './insufficientFunds';
 import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
@@ -94,6 +95,8 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   9. The one-time double-up flag is set only when the double-up actually happens. A double-up skipped (cap, cancel failure, buy
 //      refused) stays due and is retried from the parent's ticks (every DOUBLE_RETRY_MS) until it happens or the parent closes.
 // State (hedged / doubled / quantities) is kept per day in a JSON file and checked against the broker's open trades at reconcile.
+// NOTE (2026-11-26): a buy refused for INSUFFICIENT FUNDS / MARGIN (insufficientFunds.ts) is reported with one ALERT and never retried: a hedge leaves its leg
+// marked `noFunds`, a root sets `rootNoFunds` (no root for the rest of the day; reset() re-arms). Every other refusal is retried as before.
 
 const PCR_RECHECK_MS = 5 * 60 * 1000;
 const ROOT_MIN_PREMIUM = 100; // ContinuousStrategy's default; there is deliberately no config key for it
@@ -133,17 +136,19 @@ export interface SimpleLeg {
     pnlRef?: number;        // price the maxProfit total values this leg from (blended on a double-up); absent = its entry
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
     cancelSell?: boolean;   // reconcile found this leg gone from the order side while a resting sell was recorded for it: that sell is cancelled from the tick path (a reconcile never trades)
+    noFunds?: boolean;      // this leg's hedge buy was refused for insufficient funds: reported, never retried (`hedged` stays true)
     restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
     added?: boolean;        // a later buy of the same contract was added to this leg (blended entry); the leg is no longer a never-hedged first order
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
     // The hedge buy (or the add buy `addToLegId`) of this leg was UNCONFIRMED (timeout / cancel failed / broker unreadable) and may be live. `hedged` stays
     // true meanwhile (no second buy), every buy of the strategy waits, and the record is settled against the broker (cancelled with 0 filled -> `hedged`
     // cleared, retried; filled or part filled -> the fill is adopted, never bought again). Persisted, so it survives a restart.
-    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; addToLegId?: string; heldBefore?: number; at: number };
+    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; addToLegId?: string; heldBefore?: number; at: number; noFunds?: string };
 }
 
 interface PairContract { tradingSymbol: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; premium: number }
 interface State { day: string; legs: Record<string, SimpleLeg>; pair?: { CE?: PairContract; PE?: PairContract }; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean;
+    rootNoFunds?: boolean; // the root buy was refused for insufficient funds: not retried today (reset() re-arms)
     // Broker order ids of the sells this strategy's fill handler (or a reconcile that attributed a platform sell) already booked. sellIdsTracked is set only on a state
     // created by code that records them: a state without it is legacy and its reconcile falls back to quantities (see platformSells.ts).
     sellIdsTracked?: boolean; seenSells?: string[];
@@ -454,7 +459,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         // order closed at a profit, same-contract no-re-buy, an adopted pair) or the 2026-11-17 defect (a cancelled, never-filled hedge left hedged: true).
         // They cannot be told apart from state alone, so nothing is cleared (a wrong clear could buy a second hedge): it is only reported.
         for (const leg of this.openLegs()) {
-            if (leg.hedged && !leg.pendingHedge && !leg.restarted && !Object.values(this.state.legs).some((l) => l.parentId === leg.id) && !this.openLegs().some((l) => l.right === opposite(leg.right))) {
+            if (leg.hedged && !leg.noFunds && !leg.pendingHedge && !leg.restarted && !Object.values(this.state.legs).some((l) => l.parentId === leg.id) && !this.openLegs().some((l) => l.right === opposite(leg.right))) {
                 Log.log(`[ExperimentalScaledStrategy] ALERT: reconcile: ${leg.tsym} is open and marked hedged but has no hedge leg and no ${opposite(leg.right)} leg is open - check whether its hedge was ever filled (state file: set hedged false to have it hedged on the next adverse move)`);
             }
         }
@@ -543,6 +548,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         if (!(qty > 0) || !(maxInvestment > 0) || !(this.priceDiff() > 0) || !(this.maxProfit() > 0)) { this.gateLog.log('initialQuantity / maxInvestment / priceDiff / maxProfit not set'); return; }
         // One root per day: after it, every order is a hedge (or a double-up). Adopted legs count (reconcile gives them role 'root').
         // A root whose profit ended the first-order cycle (`restarted`) does not count: the selection starts over.
+        if (this.state.rootNoFunds) { this.gateLog.log('root buy refused for insufficient funds - not retried today (reset re-arms)'); return; }
         if (Object.values(this.state.legs).some((l) => l.role === 'root' && !l.restarted)) { this.gateLog.log('root already opened today'); return; }
 
         this.entering = true; // synchronous, before any await
@@ -601,10 +607,14 @@ export default class ExperimentalScaledStrategy extends Strategy {
             trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
         } catch (e) {
             Log.log('[ExperimentalScaledStrategy] root buy failed:', e);
-            if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) return; // definitely not placed: the next tick may try again
+            if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) { // definitely not placed: the next tick may try again, except for funds
+                if (isInsufficientFunds(e)) this.giveUpRoot(contract.tradingSymbol, e);
+                return;
+            }
             // Outcome unknown (IPC timeout / unconfirmed fill): settle it against the order side and the broker instead of parking the strategy.
             const res = await this.resolveUnconfirmedBuy(contract);
             if (res.kind === 'none') {
+                if (isInsufficientFunds(e)) { this.giveUpRoot(contract.tradingSymbol, e); return; }
                 Log.log(`[ExperimentalScaledStrategy] root buy of ${contract.tradingSymbol} was cancelled with 0 filled - no position, a new root may be tried`);
                 return;
             }
@@ -906,6 +916,22 @@ export default class ExperimentalScaledStrategy extends Strategy {
         return Math.min(Math.max(q, base), Math.floor(NIFTY_FREEZE_QUANTITY / lot) * lot);
     }
 
+    // A buy refused for insufficient funds is reported once and never retried (see insufficientFunds.ts). The leg keeps `hedged` true, so no tick,
+    // retry or reconcile path buys for it again; its resting sell and exits are unaffected.
+    private giveUpHedge(leg: SimpleLeg, tsym: string, e: unknown): void {
+        leg.hedged = true;
+        leg.hedgeWaiting = false;
+        leg.noFunds = true;
+        this.save();
+        Log.log(`[ExperimentalScaledStrategy] ALERT: hedge buy ${tsym} for ${leg.tsym} (${this.userId}) refused for insufficient funds - not retried: ${(e as any)?.message ?? e}`);
+    }
+
+    private giveUpRoot(tsym: string, e: unknown): void {
+        this.state.rootNoFunds = true;
+        this.save();
+        Log.log(`[ExperimentalScaledStrategy] ALERT: root buy ${tsym} (${this.userId}) refused for insufficient funds - not retried today (reset re-arms): ${(e as any)?.message ?? e}`);
+    }
+
     // `same`: follow the leg's direction (buy the same right) instead of the opposite one - used when the leg closed at a profit.
     private async hedge(leg: SimpleLeg, reason: string, same = false): Promise<void> {
         if (leg.hedged || this.busy.has(leg.id) || !this.enabled || this.buysBlocked() || this.isStopped()) return;
@@ -982,6 +1008,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker());
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
+                    if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
                     Log.log('[ExperimentalScaledStrategy] hedge buy failed (not placed, will retry):', e);
                     this.save();
@@ -991,6 +1018,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 Log.log(`[ExperimentalScaledStrategy] hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
+                    if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
                     Log.log(`[ExperimentalScaledStrategy] hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     this.save();
@@ -999,7 +1027,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 if (res.kind === 'unknown') {
                     // hedged stays true (no second buy) but the order is RECORDED: it is settled from the broker (cancelled -> hedged cleared and
                     // retried, filled -> adopted) by the cancel notification / the Nifty-tick poll, also after a restart. No buy meanwhile.
-                    leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: hedgeQty, at: Date.now() };
+                    leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: hedgeQty, at: Date.now(), ...(isInsufficientFunds(e) ? { noFunds: String((e as any)?.message ?? e) } : {}) };
                     Log.log(`[ExperimentalScaledStrategy] ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - recorded as pending on ${leg.tsym}; no new buys until it is settled from the broker`);
                     this.save();
                     return;
@@ -1091,7 +1119,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
             this.save();
             Log.log(`[ExperimentalScaledStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
         } else if (!leg.hedged) await this.hedge(leg, 'target met', same);
-        else if (!leg.restarted && this.chainDead(leg)) {
+        else if (!leg.restarted && !leg.noFunds && this.chainDead(leg)) {
             // The chain's last leg closed carrying a stale `hedged` flag (a hedge buy that was cancelled unfilled left it true with no hedge leg; same defect as
             // SimpleContinuousStrategy 2026-11-25 Breeze). Nothing is open, waiting or in flight and no leg follows this one: clear the flag and hedge from it now
             // (a loss buys the opposite right, a profit the same one). hedge() keeps every guard (fixed contract, side check, maxInvestment, duplicate protection).
@@ -1157,6 +1185,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 if (res.kind === 'unknown') { Log.log(`[ExperimentalScaledStrategy] pending ${p.addToLegId ? 'add' : 'hedge'} buy ${p.tsym} of ${leg.tsym} still unresolved (${res.why}) - retrying`); continue; }
                 leg.pendingHedge = undefined;
                 if (res.kind === 'none') {
+                    if (p.noFunds) { this.giveUpHedge(leg, p.tsym, p.noFunds); continue; }
                     leg.hedged = false;
                     leg.hedgeWaiting = false;
                     this.save();
@@ -1413,6 +1442,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         { const parents = new Set(Object.values(this.state.legs).map((l) => l.parentId).filter(Boolean)); for (const l of Object.values(this.state.legs)) if (l.status === 'closed' && !l.hedged && !l.hedgeWaiting && !l.pendingHedge && !parents.has(l.id)) l.hedged = true; }
         if (reopened.length) Log.log(`[ExperimentalScaledStrategy] reset: closed root(s) ${reopened.map((l) => l.tsym).join(', ')} re-opened for selection (root gate open, new root allowed)`);
         else if (live.length) Log.log(`[ExperimentalScaledStrategy] reset: root gate left as is, ${live.length} live/pending leg(s): ${live.map((l) => l.tsym).join(', ')}`);
+        this.state.rootNoFunds = false;
         this.save();
         this.manualReview = false;
         this.entering = false;

@@ -132,7 +132,7 @@ const BUY_FILL_POLL_DELAY_MS = 2500;
 async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userId: string): Promise<number> {
     const prism = Prism.getInstance();
     for (let attempt = 1; attempt <= BUY_FILL_POLL_ATTEMPTS; attempt++) {
-        const { status, fillPrice, filledQuantity } = await prism.getOrderStatus(orderId);
+        const { status, fillPrice, filledQuantity, reason } = await prism.getOrderStatus(orderId);
         if (status === 'COMPLETE') {
             if (!fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`), { fillStateUnknown: true, orderMayBeLive: false });
             return fillPrice;
@@ -145,7 +145,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
                     filledQuantity: Number(filledQuantity), averagePrice: fillPrice, partial: true, orderTerminal: true,
                 });
             }
-            const refusal = new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
+            const refusal = new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled${reason ? `: ${reason}` : ''}`); // the reason: callers act on it (insufficient funds)
             // Definite only when nothing filled (a partial fill with an unreadable price must not read as "not placed").
             // A REJECTED order never traded, so a missing fillshares is fine there; a CANCELLED one must show zero.
             const nothingFilled = status === 'REJECTED' ? !(Number(filledQuantity ?? 0) > 0) : filledQuantity !== undefined && Number(filledQuantity) === 0;

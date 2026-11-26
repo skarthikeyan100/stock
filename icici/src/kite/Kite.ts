@@ -496,7 +496,8 @@ class Kite {
                     );
                 }
                 // Nothing filled: a definite refusal, so a strategy may safely re-arm ([NOT_PLACED] in the order process).
-                throw markNotPlaced(new Error(`Kite order ${orderId} ${latest.status}`));
+                const reason = latest.status_message ? `: ${latest.status_message}` : ''; // callers act on it (insufficient funds)
+                throw markNotPlaced(new Error(`Kite order ${orderId} ${latest.status}${reason}`));
             }
 
             // Skip the drift check on the very first attempt: the resting

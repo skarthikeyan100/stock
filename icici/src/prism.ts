@@ -698,7 +698,7 @@ export default class Prism {
     // means a partial-fill-then-cancel record (status CANCELED/CANCELLED
     // with nonzero fillshares) is no longer indistinguishable from a true
     // non-fill - see docs/status/gaps.md's "Partial-fill accounting" entry.
-    getOrderStatus = async (orderNo: string, orders?: any[]): Promise<{ status: string; fillPrice?: number; filledQuantity?: number }> => {
+    getOrderStatus = async (orderNo: string, orders?: any[]): Promise<{ status: string; fillPrice?: number; filledQuantity?: number; reason?: string }> => {
         const list = orders ?? (await this.getOrderBook());
         const match = list.find((o) => o.norenordno === orderNo);
         if (!match) return { status: 'PENDING', filledQuantity: 0 };
@@ -718,7 +718,7 @@ export default class Prism {
         // canonical string either way so callers never need their own
         // spelling table.
         if (match.status === 'REJECTED' || match.status === 'REJECT') {
-            return { status: 'REJECTED', filledQuantity, ...(Number(filledQuantity ?? 0) > 0 && fillPrice ? { fillPrice } : {}) };
+            return { status: 'REJECTED', filledQuantity, ...(match.rejreason ? { reason: String(match.rejreason) } : {}), ...(Number(filledQuantity ?? 0) > 0 && fillPrice ? { fillPrice } : {}) };
         }
         if (match.status === 'CANCELED' || match.status === 'CANCELLED') {
             // A partial fill before the cancel: its average price travels with it so the caller can book the filled part.
