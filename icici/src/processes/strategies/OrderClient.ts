@@ -258,10 +258,11 @@ class OrderClient {
         return this.call('sellContract', userId, { contract, quantity, price });
     }
 
-    // The sells the platform itself placed and booked for this user on one contract today, oldest first (order id, summed quantity, average price, time).
+    // The sells the platform itself placed and booked for this user on one contract today (or since the start of day `since`, YYYY-MM-DD: the day-rollover
+    // check of an earlier day's open legs), oldest first (order id, summed quantity, average price, time).
     // null = the evidence could not be read (the caller must not conclude anything from it).
-    async platformSells(userId: string, broker: string, tradingSymbol: string): Promise<{ orderId: string; quantity: number; price: number; at: number }[] | null> {
-        return this.call('platformSells', userId, { broker, tradingSymbol });
+    async platformSells(userId: string, broker: string, tradingSymbol: string, since?: string): Promise<{ orderId: string; quantity: number; price: number; at: number }[] | null> {
+        return this.call('platformSells', userId, { broker, tradingSymbol, since });
     }
 
     // The paper broker's in-memory book (read-only), held by the order process.

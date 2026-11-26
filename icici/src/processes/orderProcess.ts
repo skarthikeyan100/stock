@@ -1325,7 +1325,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'platformSells': {
                 if (reconcileInFlight) await reconcileInFlight;
                 const b = req.payload?.broker === 'paper' ? 'paper' : normalizeBrokerName(req.payload?.broker ?? 'kite');
-                return { kind: 'response', id: req.id, ok: true, result: await bookkeeping.platformSells(req.userId, b as any, String(req.payload?.tradingSymbol ?? '')) };
+                return { kind: 'response', id: req.id, ok: true, result: await bookkeeping.platformSells(req.userId, b as any, String(req.payload?.tradingSymbol ?? ''), req.payload?.since ? String(req.payload.since) : undefined) };
             }
 
             case 'openTrades':

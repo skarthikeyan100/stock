@@ -303,6 +303,16 @@ class ANT {
 
 
 
+    // ANT answers an empty book with a non-Ok envelope instead of an empty list. Only an exact status + message pair is a definitive empty
+    // book; every other non-Ok reply (an expired/invalid session, EC915 "Failed to retrieve the order book", EC997, ...) stays a failure.
+    // Seen in the live logs: positions EC920 "Error: No positions found for this user." and trades EC926 "No trades found for this user.".
+    // EC926 on positions was accepted before EC920 was seen and stays accepted.
+    private static isEmptyPositions(data: any): boolean {
+        const message = String(data?.message ?? '');
+        return (data?.status === 'EC920' && /No positions found/i.test(message))
+            || (data?.status === 'EC926' && /No (positions|trades) found/i.test(message));
+    }
+
     // strict=true: a non-Ok envelope throws instead of returning [] (only the EC926 "No trades found" reply is a definitive empty book).
     async getTrades(opts?: { strict?: boolean }): Promise<any[]> {
         try {
@@ -354,8 +364,8 @@ class ANT {
             if (posResp.data?.status === 'Ok' && posResp.data?.result) {
                 return posResp.data.result;
             }
-            if (posResp.data?.status === 'EC926' && /No (positions|trades) found/i.test(String(posResp.data?.message ?? ''))) {
-                return []; // definitive "no positions" (mirrors the trade book's empty reply), not a failure
+            if (ANT.isEmptyPositions(posResp.data)) {
+                return []; // definitive "no positions" (a flat account), not a failure
             }
             if (opts?.strict) {
                 throw new Error(`ANT positions not Ok: ${JSON.stringify(posResp.data).slice(0, 200)}`);

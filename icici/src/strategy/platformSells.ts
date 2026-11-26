@@ -11,9 +11,10 @@ import OrderClient from '../processes/strategies/OrderClient';
 
 export interface PlatformSell { orderId: string; quantity: number; price: number; at: number }
 
-export async function readPlatformSells(userId: string, broker: string, tsym: string): Promise<PlatformSell[] | null> {
+// `since` (YYYY-MM-DD): sells from the start of that day on; absent = today's.
+export async function readPlatformSells(userId: string, broker: string, tsym: string, since?: string): Promise<PlatformSell[] | null> {
     try {
-        const rows = await OrderClient.getInstance().platformSells(userId, broker, tsym);
+        const rows = await OrderClient.getInstance().platformSells(userId, broker, tsym, since);
         return Array.isArray(rows) ? rows : null;
     } catch (e) {
         Log.log(`[${userId}] reconcile: could not read the platform's own sells of ${tsym} (nothing is attributed to the platform, the leg is handled as before):`, e);
@@ -33,6 +34,15 @@ export interface Allocation {
     perLeg: Map<string, number>; // quantity booked to each leg (legs in the given order, oldest first)
 }
 
+// The sells the strategy has not accounted for yet. null = a legacy state whose boundary falls inside one order (which part was seen is unknown).
+export function unseenSells(sells: PlatformSell[], seen: SeenSells): PlatformSell[] | null {
+    if (seen.ids) return sells.filter((s) => !seen.ids!.has(s.orderId));
+    let skipped = 0;
+    let i = 0;
+    while (i < sells.length && skipped < seen.legacyQty) { skipped += sells[i].quantity; i++; }
+    return skipped > seen.legacyQty ? null : sells.slice(i);
+}
+
 /**
  * Which of the platform's sells cover the legs that are gone from the broker. Never guesses:
  *  - an order the strategy already saw (its id is in `seen.ids`) is skipped, so nothing is booked twice;
@@ -44,15 +54,8 @@ export interface Allocation {
 export function allocatePlatformSells(sells: PlatformSell[], seen: SeenSells, legs: GoneLeg[]): Allocation | null {
     const need = legs.reduce((s, l) => s + Math.max(0, l.remaining), 0);
     if (!(need > 0)) return null;
-    let pool: PlatformSell[];
-    if (seen.ids) pool = sells.filter((s) => !seen.ids!.has(s.orderId));
-    else {
-        let skipped = 0;
-        let i = 0;
-        while (i < sells.length && skipped < seen.legacyQty) { skipped += sells[i].quantity; i++; }
-        if (skipped > seen.legacyQty) return null;
-        pool = sells.slice(i);
-    }
+    const pool = unseenSells(sells, seen);
+    if (!pool) return null;
     const taken: PlatformSell[] = [];
     let qty = 0;
     for (const s of pool) {

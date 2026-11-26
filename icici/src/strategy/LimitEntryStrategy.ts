@@ -1,4 +1,5 @@
 import { bookPlatformSoldLegs } from './platformSells';
+import { reportCarriedLegs } from './dayRollover';
 import * as fs from 'fs';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import * as path from 'path';
@@ -164,6 +165,7 @@ export abstract class LimitEntryStrategy extends Strategy {
         this.loaded = true;
         this.stateUnreadable = false;
         let fresh: State = { day: today, keys: [], legs: {}, sellIdsTracked: true, seenSells: [] };
+        let earlier: State | null = null; // an earlier day's state: what it left unfinished is checked against the platform's own sells (dayRollover.ts)
         try {
             const raw = JSON.parse(fs.readFileSync(this.stateFile(), 'utf8')) as State;
             if (raw?.day === today) {
@@ -174,12 +176,7 @@ export abstract class LimitEntryStrategy extends Strategy {
                     if (leg.exitRetryAt === -1) { leg.exitRetryAt = undefined; Log.log(`[${this.logTag}] ${leg.tsym}: cleared a stale 'exit placement in flight' marker after restart`); }
                 }
             } else if (raw?.legs) {
-                // A previous day's leg that never closed is not managed any more (strategies hold no state across days): say so.
-                for (const leg of Object.values(raw.legs)) {
-                    if (leg.status === 'filled' || leg.status === 'resting' || leg.status === 'placing') {
-                        Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym} from ${raw.day} was still ${leg.status} (filled ${leg.filledQty}, sold ${leg.soldQty}) when the day rolled over - check the broker position by hand`);
-                    }
-                }
+                earlier = raw;
             }
         } catch (e: any) {
             // ENOENT = no state yet (normal first run). Any other failure (a truncated/corrupt file) must NOT read as "nothing fired and
@@ -191,6 +188,25 @@ export abstract class LimitEntryStrategy extends Strategy {
         }
         this.state = fresh;
         for (const leg of Object.values(this.state.legs)) this.rewatch(leg);
+        if (earlier) this.rolloverCheck = this.reportRollover(earlier);
+    }
+
+    private rolloverCheck: Promise<void> = Promise.resolve();
+
+    // A previous day's leg that never closed is not managed any more (strategies hold no state across days): say so, unless the platform's own
+    // sells closed it or it is a paper leg. Reads and logs only (see dayRollover.ts). A resting / placing entry may have filled without the strategy
+    // being told, so only sells of the whole ordered quantity explain it; a filled leg needs what it is recorded to still hold.
+    private reportRollover(old: State): Promise<void> {
+        return reportCarriedLegs({
+            tag: this.logTag, userId: this.userId, fromDay: old.day,
+            seenIds: old.sellIdsTracked ? new Set(old.seenSells ?? []) : null,
+            legs: Object.values(old.legs).map((l) => ({
+                broker: l.broker, tsym: l.tsym, open: l.status === 'filled' || l.status === 'resting' || l.status === 'placing',
+                remaining: (l.status === 'filled' ? l.filledQty : l.qty) - l.soldQty,
+                accounted: l.status === 'closed' ? l.filledQty : l.soldQty,
+                alert: `${l.broker} ${l.tsym} from ${old.day} was still ${l.status} (filled ${l.filledQty}, sold ${l.soldQty}) when the day rolled over - check the broker position by hand`,
+            })),
+        });
     }
 
     // Returns false when the state could not be written. Callers that are about to place an order must then not place it.
@@ -764,6 +780,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     // Adopts positions the order process knows about (POST /reconcile): a fill missed while this process was down.
     async reconcile(): Promise<void> {
         this.ensureLoaded();
+        await this.rolloverCheck; // before anything below saves over an earlier day's file, so a restart during the check repeats it
         let open: any[] = [];
         try { open = await OrderClient.getInstance().getOpenTrades(this.userId); } catch (e) { Log.log(`[${this.logTag}] reconcile: could not read open trades:`, e); throw e; } // fail the reconcile: returning would mark the strategy loaded with nothing reconciled
         let closedAny = false;

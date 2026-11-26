@@ -11,6 +11,7 @@ import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
 import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution } from './unconfirmedBuy';
 import { bookPlatformSoldLegs } from './platformSells';
+import { reportCarriedLegs } from './dayRollover';
 import { lostFollowUp } from './chainFollowUp';
 import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
@@ -77,6 +78,7 @@ type Right = 'CE' | 'PE';
 
 export interface SimpleLeg {
     id: string;
+    broker?: string;     // the broker the leg was bought at (absent on older legs: the block's configured broker); read by the day-rollover check
     tsym: string;
     token: string;
     exchange: 'NFO' | 'BFO';
@@ -207,6 +209,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (this.loaded && this.state.day === today) return;
         this.loaded = true;
         let fresh: State = { day: today, legs: {}, seq: 0, pnlStarted: true, realizedPnl: 0, profitTripped: false, sellIdsTracked: true, seenSells: [] };
+        let earlier: State | null = null; // an earlier day's state: its open legs are checked against the platform's own sells (dayRollover.ts)
         try {
             const raw = JSON.parse(fs.readFileSync(this.stateFile(), 'utf8')) as State;
             if (raw?.day === today) {
@@ -219,14 +222,27 @@ export default class SimpleContinuousStrategy extends Strategy {
                     for (const leg of Object.values(fresh.legs)) if (leg.status === 'open') { leg.pnlRef = undefined; leg.pnlRefPending = true; }
                 }
             }
-            else if (raw?.legs) {
-                for (const leg of Object.values(raw.legs)) {
-                    if (leg.status === 'open') Log.log(`[SimpleContinuousStrategy] ALERT: ${leg.tsym} from ${raw.day} was still open when the day rolled over - check the broker position by hand`);
-                }
-            }
+            else if (raw?.legs) earlier = raw;
         } catch { /* no file yet */ }
         this.state = fresh;
+        if (earlier) this.rolloverCheck = this.reportRollover(earlier);
         for (const leg of this.openLegs()) this.watch(leg);
+    }
+
+    private rolloverCheck: Promise<void> = Promise.resolve();
+
+    // Reads and logs only (see dayRollover.ts).
+    private reportRollover(old: State): Promise<void> {
+        const configured = this.brokerOrKite();
+        return reportCarriedLegs({
+            tag: 'SimpleContinuousStrategy', userId: this.userId, fromDay: old.day,
+            seenIds: old.sellIdsTracked ? new Set(old.seenSells ?? []) : null,
+            legs: Object.values(old.legs).map((l) => ({
+                broker: l.broker ?? configured, tsym: l.tsym, open: l.status === 'open',
+                remaining: l.qty - l.soldQty, accounted: l.status === 'closed' ? l.qty : l.soldQty,
+                alert: `${l.tsym} from ${old.day} was still open when the day rolled over - check the broker position by hand`,
+            })),
+        });
     }
 
     private save(): void {
@@ -309,6 +325,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             return;
         }
         this.blocked = false;
+        await this.rolloverCheck; // before the first save below replaces an earlier day's file, so a restart during the check repeats it
         const byKey = new Map<string, Trade>();
         for (const t of openTrades) byKey.set(String(t.token), t);
         // A leg the broker no longer holds that the platform's OWN order sold (a lock-profits sell that filled while this strategy was disabled and so
@@ -351,7 +368,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             const right: Right = contract?.optionType === 'PE' ? 'PE' : 'CE';
             rights.add(right);
             const leg: SimpleLeg = {
-                id: this.newLegId(), tsym: t.tsym, token: String(t.token), exchange: contract?.exch === 'BFO' ? 'BFO' : 'NFO',
+                id: this.newLegId(), broker: this.brokerOrKite(), tsym: t.tsym, token: String(t.token), exchange: contract?.exch === 'BFO' ? 'BFO' : 'NFO',
                 strike: contract?.strike ?? 0, right, role: 'root', entry: Number(t.originalEntryPrice ?? t.price), qty: Number(t.quantity),
                 soldQty: 0, soldValue: 0, hedged: false, status: 'open', sellQty: 0, sellPrice: 0,
             };
@@ -517,7 +534,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         const filled = Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
         const price = Number(trade.price) > 0 ? Number(trade.price) : contract.premium;
         const leg: SimpleLeg = {
-            id: this.newLegId(), tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, role,
+            id: this.newLegId(), broker: this.brokerOrKite(), tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, role,
             parentId, entry: price, qty: filled, soldQty: 0, soldValue: 0, hedged, status: 'open', sellQty: 0, sellPrice: 0,
             ...(this.lastNiftyLtp > 0 ? { niftyAt: this.lastNiftyLtp } : {}),
         };

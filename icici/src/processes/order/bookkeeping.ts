@@ -814,6 +814,12 @@ class OrderBookkeeping {
         return d;
     }
 
+    // Local midnight of a YYYY-MM-DD day key (dayKey.ts); today's when absent or unreadable (the narrower period).
+    private static startOfDayKey(day?: string): Date {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day ?? '');
+        return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : OrderBookkeeping.startOfDay();
+    }
+
     // Realized P&L only (not unrealized/open-position exposure), summed from
     // the closedTrades collection (see persistClosedTrade) rather than the
     // in-memory, never-resetting userPnL map, so the daily/weekly window is
@@ -2183,13 +2189,14 @@ class OrderBookkeeping {
         return rows.filter((r) => r.tsyms.includes(t.tsym) || (t.token != null && r.tokens.includes(String(t.token))));
     }
 
+    // `since` (YYYY-MM-DD) widens "today" to the start of that day: a strategy's day-rollover check of legs an earlier day's state left open (dayRollover.ts).
     // The sells of one contract that the PLATFORM itself placed for `user` today (a strategy asks for them in its reconcile to tell a leg its own order sold
     // - e.g. a lock-profits limit sell that filled while the strategy was disabled and so never saw the fill - from one closed outside the platform).
-    // Evidence = a Sell fill in Mongo's `Trade` (user + broker + contract, today) whose order id the order-owner ledger names for the SAME user and does not
+    // Evidence = a Sell fill in Mongo's `Trade` (user + broker + contract, in that period) whose order id the order-owner ledger names for the SAME user and does not
     // mark `foreign` (a broker-side sell booked against the user's lots: bookForeignSellShortfall, the BROKER-SYNC close). A fill with no order id, no
     // ledger row or another owner is not evidence. Fills of one order id are summed (qty, qty-weighted price). The paper broker has no Mongo rows and no
     // foreign sells: its own closed trades in memory are the record. Oldest first. null when the evidence cannot be read.
-    async platformSells(user: string, broker: BrokerKey | 'paper', tsym: string): Promise<{ orderId: string; quantity: number; price: number; at: number }[] | null> {
+    async platformSells(user: string, broker: BrokerKey | 'paper', tsym: string, since?: string): Promise<{ orderId: string; quantity: number; price: number; at: number }[] | null> {
         if (broker === 'paper') {
             const rows = this.closedTrades.filter((c) => c.action === 'Sell' && c.broker === 'paper' && c.user === user && c.tsym === tsym && Number(c.quantity) > 0);
             return rows.map((c, i) => ({ orderId: `paper:${new Date(c.exitTime).getTime()}:${i}`, quantity: Number(c.quantity), price: Number(c.price) + (Number(c.realizedPnL) || 0) / Number(c.quantity), at: new Date(c.exitTime).getTime() }))
@@ -2199,7 +2206,7 @@ class OrderBookkeeping {
         if (!db) return null;
         try {
             const brokerMatch = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
-            const docs: any[] = await db.collection('Trade').find({ user, tsym, action: 'Sell', brokerOrderId: { $exists: true, $nin: [null, ''] }, entryTime: { $gte: OrderBookkeeping.startOfDay() }, ...brokerMatch }).sort({ entryTime: 1 }).toArray();
+            const docs: any[] = await db.collection('Trade').find({ user, tsym, action: 'Sell', brokerOrderId: { $exists: true, $nin: [null, ''] }, entryTime: { $gte: OrderBookkeeping.startOfDayKey(since) }, ...brokerMatch }).sort({ entryTime: 1 }).toArray();
             const ids = Array.from(new Set(docs.map((d) => String(d.brokerOrderId)).filter((id) => !id.startsWith('BROKER-SYNC-'))));
             if (ids.length === 0) return [];
             const ledger: any[] = await loadOrderOwnerRows(ids, broker);
