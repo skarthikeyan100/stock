@@ -18,6 +18,9 @@ export interface PendingOrder {
     quantity: number;
     exchange: OptionExchange;
     action: 'Buy' | 'Sell';
+    /** An entry buy put on the poller because the entry call could not establish its outcome: its fill is booked and an explicit cancel finds it,
+     *  but a cancel / reject seen by the poll is not told to the cancelled listeners (no strategy placed a resting order). Persisted. */
+    quiet?: boolean;
 }
 
 export interface OrderStatus {
@@ -302,7 +305,9 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             this.untrack(orderId);
             const remainingQty = order.quantity - filledQty;
             if (remainingQty <= 0) return;
-            if (silencedOrder) {
+            if (order.quiet) {
+                Log.log(`[order] Unconfirmed ${label} entry buy ${orderId} (${order.tradingSymbol}, ${order.userId}) is ${status} with ${filledQty} filled - tracking ended, listeners not notified`);
+            } else if (silencedOrder) {
                 Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status} after a fill in the cancel race - the cancelling caller owns the remainder, listeners not notified`);
             } else if (skipListener) {
                 Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close (or expired) - leaving re-placement to tomorrow's reconcile()`);

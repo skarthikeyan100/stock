@@ -63,28 +63,36 @@ async function main() {
         { brokerOrderId: '26112500162000', transactionType: 'SELL', instrumentId: '47836', filledQuantity: 195, tradedPrice: 214.3 },
     ] };
     const positions = { success: true, positions: [{ realizedPnl: 3357.25 }] };
-    const day = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
-    const exitT = new Date(`${day}T13:00:00+05:30`);
+    // The repaired day is fixed: the fixture and `now` are dated to it, so the result does not depend on the day the test runs.
+    const exitT = new Date('2026-11-25T13:00:00+05:30');
+    const now = new Date('2026-11-25T16:00:00+05:30');
     const mk = () => makeDb({
         Trade: [{ _id: 's', user: 'SimpleContinuousStrategy-ANT', tsym: 'NIFTY01DEC26P25700', action: 'Sell', broker: 'ant', brokerOrderId: '26112500162000', quantity: 195, price: 214.3 }],
         closedTrades: [{ _id: 'x', user: 'SimpleContinuousStrategy-ANT', tsym: 'NIFTY01DEC26P25700', broker: 'ant', quantity: 195, entryPrice: 212.8, exitPrice: 222.8, realizedPnL: 3357.25 - 1950, exitTime: exitT }],
     });
     const rdb: any = mk();
-    const dr = await rep.repair(rdb, { apply: false, book, positions, log: silent });
+    const dr = await rep.repair(rdb, { apply: false, book, positions, now, log: silent });
     assert(dr.insertedTrade && dr.insertedClosed && rdb.data.Trade.length === 1 && rdb.data.closedTrades.length === 1, 'dry run reports both inserts and writes none');
     assert(dr.postCheck && Math.abs(dr.postCheck.diff) < 30, 'the dry run\'s post-check projects the platform total equal to ANT\'s own realized');
-    const refused = await rep.repair(mk(), { apply: true, book: null, positions, log: silent });
+    const refused = await rep.repair(mk(), { apply: true, book: null, positions, now, log: silent });
     assert(!!refused.refused && !refused.insertedTrade, 'apply without the ANT book confirming the fills is refused');
-    const wrong = await rep.repair(mk(), { apply: true, book: { success: true, trades: [] }, positions, log: silent });
+    const wrong = await rep.repair(mk(), { apply: true, book: { success: true, trades: [] }, positions, now, log: silent });
     assert(!!wrong.refused, 'apply is refused when the book does not hold the fills');
-    const ap = await rep.repair(rdb, { apply: true, book, positions, log: silent });
+    const ap = await rep.repair(rdb, { apply: true, book, positions, now, log: silent });
     const buyDoc = rdb.data.Trade.find((d: any) => d.action === 'Buy');
     assert(!!buyDoc && buyDoc.brokerOrderId === '26112500161991' && buyDoc.brokerOrderKey === 'ant:26112500161991' && buyDoc.repairedManually === true && buyDoc.status === 'COMPLETE' && buyDoc.token === '47836' && buyDoc.quantity === 195 && buyDoc.price === 204.3 && buyDoc.broker === 'ant' && buyDoc.user === 'SimpleContinuousStrategy-ANT', 'the raw Buy doc has the neighbours\' shape plus brokerOrderKey and repairedManually');
     const row = rdb.data.closedTrades.find((r: any) => r.entryPrice === 204.3);
     assert(!!row && row.exitPrice === 214.3 && row.realizedPnL === 1950 && row.quantity === 195 && row.sellOrderId === '26112500162000' && row.brokerOrderKey === 'ant:26112500162000' && row.exitTime.toISOString() === '2026-11-25T08:05:24.810Z', 'the closedTrades row: entry 204.30, exit 214.30, pnl 1950, sell order 26112500162000 at 08:05:24.8Z');
     assert(ap.postCheck && Math.abs(ap.postCheck.diff) < 30, 'post-check after the apply: Mongo ANT realized equals ANT\'s realizedPnl');
-    const again = await rep.repair(rdb, { apply: true, book, positions, log: silent });
+    const again = await rep.repair(rdb, { apply: true, book, positions, now, log: silent });
     assert(!again.insertedTrade && !again.insertedClosed && rdb.data.Trade.length === 2 && rdb.data.closedTrades.length === 2, 'a second run writes nothing (idempotent)');
+    // Rows of other days are outside the repaired day's total.
+    rdb.data.closedTrades.push({ _id: 'next', broker: 'ant', quantity: 65, realizedPnL: 999, exitTime: new Date('2026-11-26T10:00:00+05:30') }, { _id: 'prev', broker: 'ant', quantity: 65, realizedPnL: 888, exitTime: new Date('2026-11-24T10:00:00+05:30') });
+    const sameDay = await rep.repair(rdb, { apply: false, book, positions, now: new Date('2026-11-25T23:59:00+05:30'), log: silent });
+    assert(sameDay.postCheck && Math.abs(sameDay.postCheck.diff) < 30, 'the post-check sums the repaired day only (rows of the day before and after are left out)');
+    const lines: string[] = [];
+    const later = await rep.repair(mk(), { apply: true, book, positions, now: new Date('2026-11-26T00:01:00+05:30'), log: (m: string) => lines.push(m) });
+    assert(later.insertedClosed && later.postCheck === null && lines.some((m) => m.includes('post-check skipped') && m.includes('2026-11-26')), 'run on a later day: the post-check is skipped (ANT\'s positions are another day\'s), the rows are still written');
 
     console.log(failed ? 'FAILED' : 'ALL PASSED');
     process.exit(failed ? 1 : 0);

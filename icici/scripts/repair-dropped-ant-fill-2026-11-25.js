@@ -7,7 +7,9 @@
 //   node scripts/repair-dropped-ant-fill-2026-11-25.js --apply
 //   options: --port 3000 (platform web server for the ANT trade-book pre-check and the post-check), --skip-broker-check (apply without the trade-book pre-check)
 // Pre-check: GET /broker/ant/trades must hold the buy (BUY, 195, 204.30, instrument 47836) and the sell (SELL, 195, 214.30). Unreachable = the apply is refused unless
-// --skip-broker-check. Post-check (read-only): the day's ant closedTrades realized in Mongo against ANT's own realized P&L (/broker/ant/positions, sum of realizedPnl).
+// --skip-broker-check. Post-check (read-only): the REPAIRED day's (2026-11-25 IST) ant closedTrades realized in Mongo against ANT's own realized P&L
+// (/broker/ant/positions, sum of realizedPnl). ANT's positions carry the current day only, so on any later day the post-check is skipped (there is nothing to
+// compare the repaired day with).
 // The running order process keeps closed rows in memory: GET /strategyPnl shows the repaired row only after its next restart (it reloads closedTrades from Mongo).
 const http = require('http');
 const { randomUUID } = require('crypto');
@@ -20,6 +22,7 @@ const FIX = {
 };
 const key = (id) => `ant:${id}`;
 const f2 = (n) => (Math.round(n * 100) / 100).toFixed(2);
+const istDay = (d) => new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 10);
 
 function get(port, path) {
     return new Promise((resolve) => {
@@ -42,7 +45,7 @@ function checkBook(book, fix = FIX) {
     return { ok: true, reason: `ANT book confirms BUY ${fix.quantity} @ ${last(b)} (order ${fix.buy.orderId}) and SELL ${fix.quantity} @ ${last(s)} (order ${fix.sell.orderId})` };
 }
 
-async function repair(db, { apply = false, book = null, skipBrokerCheck = false, positions = null, log = console.log } = {}) {
+async function repair(db, { apply = false, book = null, skipBrokerCheck = false, positions = null, log = console.log, now = new Date() } = {}) {
     const say = (m) => log(`${apply ? '' : '[dry-run] '}${m}`);
     const out = { insertedTrade: false, insertedClosed: false, refused: null, postCheck: null };
     const pre = checkBook(book);
@@ -71,9 +74,11 @@ async function repair(db, { apply = false, book = null, skipBrokerCheck = false,
         if (apply) await closed.insertOne(row);
         out.insertedClosed = true;
     }
-    // 3. post-check: Mongo's ANT closed realized for the day vs ANT's own realized (the dry run shows what it will be after the writes)
-    const day0 = new Date(Date.now() + 330 * 60000); const dayStart = new Date(`${day0.toISOString().slice(0, 10)}T00:00:00+05:30`);
-    const rows = await closed.find({ broker: FIX.broker, exitTime: { $gte: dayStart } }).toArray();
+    // 3. post-check: Mongo's ANT closed realized for the repaired day vs ANT's own realized (the dry run shows what it will be after the writes)
+    const day = istDay(FIX.sell.at);
+    if (istDay(now) !== day) { say(`post-check skipped: ANT's positions are for ${istDay(now)}, the repaired fill is of ${day} (compare that day's total with ANT's own report for it)`); return out; }
+    const dayStart = new Date(`${day}T00:00:00+05:30`);
+    const rows = await closed.find({ broker: FIX.broker, exitTime: { $gte: dayStart, $lt: new Date(dayStart.getTime() + 86400000) } }).toArray();
     let mongoRealized = rows.reduce((a, r) => a + (Number(r.realizedPnL) || 0), 0);
     if (!apply) mongoRealized += (out.insertedClosed ? FIX.quantity * (FIX.sell.price - FIX.buy.price) : 0);
     if (positions && positions.success === true && Array.isArray(positions.positions)) {

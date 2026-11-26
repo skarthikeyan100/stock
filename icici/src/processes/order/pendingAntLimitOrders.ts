@@ -201,6 +201,7 @@ const tracker = new PendingOrderTracker<PendingAntLimitOrder, null, 'ant'>({
         exchange: row.exchange,
         action: row.action ?? 'Sell',
         product: row.product,
+        ...(row.quiet ? { quiet: true } : {}),
     }),
 });
 

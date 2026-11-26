@@ -43,6 +43,12 @@ function make(id: string, legs: any[], res: any) {
     console.log('settled through a manual-review reset');
     s = make('B', [leg('L12', 'CE', '1', { pendingHedge: pend })], { kind: 'none' });
     s.manualReview = true;
+    s.enabled = false;
+    s.reset();
+    await new Promise((r) => setTimeout(r, 20));
+    assert(s.resolveCalls === 0 && !!s.state.legs.L12.pendingHedge, 'a reset of a disabled strategy takes no broker action: the record stays');
+    s.enabled = true;
+    s.manualReview = true;
     s.reset();
     await new Promise((r) => setTimeout(r, 20));
     l = s.state.legs.L12;

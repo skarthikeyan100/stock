@@ -6,6 +6,7 @@
  *   - SimpleContinuous: one open leg per side, unconfirmed hedge buy resolved against the broker, no double-up
  * Run: npx tsc, then: node ./dist/test/replayFixes.test.js
  */
+import fs from 'fs';
 import moment from 'moment';
 import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
@@ -196,8 +197,20 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     sc = newSc('SCF-c');
     root = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180);
     await sc.s.processOptionQuote(Object.assign(new OptionQuote(), { token: 'CE23900', ltp: 169 }));
-    assert(sc.s.manualReview === true && root.hedged === true, 'cancel failed -> manual review, flag stays (unchanged safe behaviour)');
+    // Since 2aa1867 an unknown outcome is a persisted pendingHedge record (not the in-memory manualReview latch): flag stays, no buy until the broker settles it.
+    assert(root.hedged === true && root.pendingHedge?.tsym === last('buyContractBare')?.args[1] && sc.s.buysBlocked(), 'cancel failed -> pending record, flag stays, buys blocked');
+    assert(JSON.parse(fs.readFileSync(sc.s.stateFile(), 'utf8')).legs[root.id].pendingHedge?.tsym === root.pendingHedge.tsym, 'the record is persisted (a restart keeps the block)');
+    calls = [];
+    const other = addLeg(sc.s, 'N23950CE', 'CE', 23950, 150, { token: 'CE23950' });
+    await sc.s.processOptionQuote(Object.assign(new OptionQuote(), { token: 'CE23900', ltp: 169 }));
+    await sc.s.processOptionQuote(Object.assign(new OptionQuote(), { token: 'CE23950', ltp: 139 }));
+    sc.s.reset();
+    await new Promise((r) => setTimeout(r, 20));
+    await sc.s.settlePendingHedges(true);
+    assert(count('cancelRestingLimitBuys') >= 1 && count('buyContractBare') === 0 && root.hedged === true && !!root.pendingHedge && other.hedged === false, 'still not cancellable: stays pending through ticks and a reset, nothing is bought');
     cancelFails = false;
+    await sc.s.settlePendingHedges(true);
+    assert(root.hedged === false && root.hedgeWaiting === true && !root.pendingHedge && !sc.s.buysBlocked(), 'cancel succeeds with 0 filled -> record settled, flag cleared, hedge retried');
 
     buyMode = 'notPlaced'; calls = [];
     sc = newSc('SCF-d');

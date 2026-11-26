@@ -60,8 +60,10 @@ async function resolveUnconfirmedAntBuy(
     mayCancel: boolean,
     pollErr: any
 ): Promise<{ quantity: number; avgPrice: number }> {
-    const manualReview = (why: string) =>
-        new Error(`ANT order ${orderNo} fill status unresolved (${why}) - manual review required. Poll error: ${pollErr?.message ?? pollErr}`);
+    // orderMayBeLive: the order process tags the failure [ORDER_MAY_BE_LIVE] (never re-bought blind), and enterPosition puts the order on the pending poller.
+    const manualReview = (why: string) => Object.assign(
+        new Error(`ANT order ${orderNo} fill status unresolved (${why}) - manual review required. Poll error: ${pollErr?.message ?? pollErr}`),
+        { orderMayBeLive: true });
 
     let before: { quantity: number; avgPrice: number } | null = null;
     try {
@@ -312,7 +314,16 @@ export async function enterPosition(
             // mayCancel is true for a bracket/cover parent too: the entry is a passive limit (best bid), so an unfilled parent is the normal
             // case, and leaving it resting meant it could fill later with broker-side legs the platform never tracked. resolveUnconfirmedAntBuy
             // re-reads the trade book after the cancel and raises manual review if it filled in the race.
-            const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, true, fallbackErr);
+            const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, true, fallbackErr).catch((e: any) => {
+                // Outcome not established (cancel failed, never terminal, trade book unreadable): a plain order goes on the pending poller, so a
+                // strategy's cancelRestingLimitBuys finds it (a failed cancel must not read as "nothing rests" and be bought again) and a late fill
+                // is booked. Not a bracket / cover parent: the poller would book it without its broker-side legs.
+                if (e?.orderMayBeLive && !useBracket && !useCover) {
+                    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Buy', product: marketEntry?.product, quiet: true });
+                    Log.log(`[order] ALERT: ANT buy ${orderNo} (${tradingSymbol}, ${userId}) may still be live - left on the pending poller (a late fill is booked without target / stop), check the broker`);
+                }
+                throw e;
+            });
             entryPrice = resolved.avgPrice;
             filledQuantity = resolved.quantity;
             Log.log(`[order] unconfirmed ANT buy ${orderNo} resolved: ${filledQuantity}/${quantity} filled @ ${entryPrice} for ${userId}`);

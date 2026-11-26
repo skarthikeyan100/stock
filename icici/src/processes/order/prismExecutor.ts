@@ -142,13 +142,14 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
             if (Number(filledQuantity ?? 0) > 0 && fillPrice) {
                 Log.log(`[order] ALERT: Prism order ${orderId} (${tradingSymbol}, ${userId}) ${status} after a PARTIAL fill of ${filledQuantity} - reported on the error, caller must book it`);
                 throw Object.assign(new Error(`Prism order ${orderId} (${tradingSymbol}, ${userId}) ${status} after partially filling ${filledQuantity}`), {
-                    filledQuantity: Number(filledQuantity), averagePrice: fillPrice, partial: true,
+                    filledQuantity: Number(filledQuantity), averagePrice: fillPrice, partial: true, orderTerminal: true,
                 });
             }
             const refusal = new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
             // Definite only when nothing filled (a partial fill with an unreadable price must not read as "not placed").
             // A REJECTED order never traded, so a missing fillshares is fine there; a CANCELLED one must show zero.
             const nothingFilled = status === 'REJECTED' ? !(Number(filledQuantity ?? 0) > 0) : filledQuantity !== undefined && Number(filledQuantity) === 0;
+            Object.assign(refusal, { orderTerminal: true });
             throw nothingFilled ? markNotPlaced(refusal) : refusal;
         }
         if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
@@ -185,11 +186,11 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         const { filledQuantity: partialQty, avgPrice } = settled.result;
         Log.log(`[order] ALERT: Prism order ${orderId} (${tradingSymbol}, ${userId}) cancelled after a PARTIAL fill of ${partialQty} - reported on the error, caller must book it`);
         throw Object.assign(new Error(`Prism order ${orderId} (${tradingSymbol}, ${userId}) partially filled ${partialQty} before cancel`), {
-            filledQuantity: partialQty, averagePrice: avgPrice, partial: true, orderMayBeLive: settled.cancelFailed,
+            filledQuantity: partialQty, averagePrice: avgPrice, partial: true, orderMayBeLive: settled.cancelFailed, orderTerminal: !settled.cancelFailed,
         });
     }
     if (settled.cancelFailed) Log.log(`[order] ALERT: Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and the cancel failed - it may still be resting live at the broker`);
-    throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`), { orderMayBeLive: settled.cancelFailed });
+    throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`), { orderMayBeLive: settled.cancelFailed, orderTerminal: !settled.cancelFailed });
 }
 
 export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
@@ -236,6 +237,13 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
     try {
         fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
     } catch (e: any) {
+        // Not proven dead (cancel failed, status unreadable, filled with no price): the order goes on the pending poller, so a strategy's
+        // cancelRestingLimitBuys finds it (a failed cancel must not read as "nothing rests" and be bought again) and a late fill is booked.
+        if (!e?.orderTerminal) {
+            if (e && typeof e === 'object' && !e.fillStateUnknown) e.orderMayBeLive = true;
+            trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange: (exchange as 'NFO' | 'BFO') ?? 'NFO', action: 'Buy', quiet: true });
+            Log.log(`[order] ALERT: Prism buy ${orderId} (${tradingSymbol}, ${userId}) may still be live - left on the pending poller, check the broker`);
+        }
         // Cancelled after a PARTIAL fill: those lots are a real position at the broker. Book them here (buyChunked and every caller
         // assume a thrown partial is already booked) before rethrowing, or they would be live and unknown to bookkeeping.
         if (e?.partial && e.filledQuantity > 0 && e.averagePrice > 0) {

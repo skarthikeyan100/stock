@@ -1383,6 +1383,6 @@ export default class ScaledHedgedStrategy extends Strategy {
         this.manualReview = false;
         this.entering = false;
         this.busy.clear();
-        void this.settlePendingHedges(true); // a reset after a human looked: resolve the recorded unconfirmed buys against the broker now
+        if (this.enabled) void this.settlePendingHedges(true); // a reset after a human looked: resolve the recorded unconfirmed buys against the broker now (disabled: no order action)
     }
 }
