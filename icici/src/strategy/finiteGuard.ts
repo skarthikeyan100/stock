@@ -1,4 +1,5 @@
 import Log from '../util/Log';
+import { RestingSell, restingExcess } from './restingCover';
 
 // Fail-safe handling of a non-finite P&L in the max-profit / max-loss trip decisions (2026-11-13).
 // In JS every comparison with NaN is false, so `if (total < cap) return;` FALLS THROUGH on NaN and trips: a single bad tick or a leg with a
@@ -29,6 +30,7 @@ export interface PnlLegView {
     lastLtp: unknown;
     ref: unknown;          // pnlRef ?? entry
     pending?: boolean;     // still waiting for its reference tick
+    resting?: RestingSell[]; // resting limit sells covering (part of) `remaining`: that part is valued at no more than their price
 }
 
 // Which field of a leg makes it unusable for P&L, or null when it is fine. A leg with no positive tick is not "bad": it simply has none yet.
@@ -38,7 +40,8 @@ export function badFieldOf(l: PnlLegView): string | null {
     return null;
 }
 
-// realized + sum over open legs of remaining x (lastLtp - ref). A leg waiting for its reference tick, or with no positive tick, counts 0; a leg
+// The max-PROFIT total: realized + sum over open legs of remaining x (lastLtp - ref), less what lastLtp overstates for quantity covered by a resting
+// sell priced below it (restingCover.ts). A leg waiting for its reference tick, or with no positive tick, counts 0; a leg
 // with an unusable field counts 0 and is reported. May still return a non-finite value (realized itself bad): the caller must not trip on it.
 export function profitTotalOf(owner: string, realized: number, legs: PnlLegView[], alert: NonFiniteAlert): number {
     let total = realized;
@@ -50,7 +53,7 @@ export function profitTotalOf(owner: string, realized: number, legs: PnlLegView[
         if (!(ltp > 0)) continue;
         const field = badFieldOf(l);
         if (field) { bad.push(`${l.id}: ${field}`); continue; }
-        total += l.remaining * (ltp - Number(l.ref));
+        total += l.remaining * (ltp - Number(l.ref)) - restingExcess(ltp, l.remaining, l.resting);
     }
     if (bad.length) alert.report(`${owner}:legs`, `[${owner}] non-finite P&L input, leg(s) skipped from the max-profit total (they count 0): ${bad.join('; ')}`);
     return total;

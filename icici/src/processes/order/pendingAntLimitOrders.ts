@@ -198,6 +198,7 @@ const tracker = new PendingOrderTracker<PendingAntLimitOrder, null, 'ant'>({
         tradingSymbol: row.tradingSymbol,
         instrumentId: row.token ?? row.instrumentId,
         quantity: row.quantity,
+        ...(row.price > 0 ? { price: row.price } : {}),
         exchange: row.exchange,
         action: row.action ?? 'Sell',
         product: row.product,

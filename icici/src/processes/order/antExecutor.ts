@@ -780,7 +780,7 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
         price,
         product,
     });
-    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell', product });
+    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell', product, price });
     return { orderId: orderNo, quantity }; // the quantity actually placed (the never-short guard may have clamped it)
 }
 

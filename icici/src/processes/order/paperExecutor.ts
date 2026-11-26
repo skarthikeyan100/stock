@@ -56,7 +56,7 @@ export function resetPaperBook(): void {
 // The TrackerHandle shape (pendingTrackers.ts) over the in-memory book: nothing to load or poll.
 export const PAPER_TRACKER = {
     find: (userId: string, tradingSymbol: string) => [...orders.values()].filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol)
-        .map((o) => ({ orderId: o.orderId, action: o.action, quantity: o.quantity, exchange: o.exchange })),
+        .map((o) => ({ orderId: o.orderId, action: o.action, quantity: o.quantity, exchange: o.exchange, price: o.price })),
     all: () => [...orders.values()].map((o) => ({ orderId: o.orderId, userId: o.userId, tradingSymbol: o.tradingSymbol, action: o.action, quantity: o.quantity, exchange: o.exchange })),
     load: async (): Promise<void> => undefined,
     poll: async (): Promise<void> => undefined,

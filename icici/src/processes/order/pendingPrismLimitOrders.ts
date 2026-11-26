@@ -64,6 +64,7 @@ const tracker = new PendingOrderTracker<PendingPrismLimitOrder, any[], 'prism'>(
         tradingSymbol: row.tradingSymbol,
         instrumentId: row.token ?? row.instrumentId,
         quantity: row.quantity,
+        ...(row.price > 0 ? { price: row.price } : {}),
         exchange: row.exchange,
         action: row.action ?? 'Sell',
         ...(row.quiet ? { quiet: true } : {}),

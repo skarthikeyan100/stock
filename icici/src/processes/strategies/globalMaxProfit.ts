@@ -9,6 +9,8 @@ import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers } from '../../strat
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import OrderClient from './OrderClient';
 import { markPrice } from './markPrice';
+import { restingByContract, cappedMarks } from './restingMarks';
+import type { RestingSell } from '../../strategy/restingCover';
 import type { Strategy } from '../../strategy/strategy';
 
 // The GLOBAL maxProfit (config.yml settings.maxProfit: one number of rupees, the same for every broker) for every strategy that has no profit stop of its own, per strategy
@@ -42,7 +44,9 @@ const num = (v: unknown): number => { const n = Number(v); return Number.isFinit
 // An open row is valued by markPrice (tick price first, a throttled live quote only when no tick exists, then the stored price / cost): see markPrice.ts.
 const markOf = markPrice;
 
-export async function checkOne(userId: string, broker: string, cap: number, stats: { trades: any[]; closedTrades: any[] }, latchedBrokers: Set<string>): Promise<void> {
+// The day P&L of one strategy instance on one broker from a stats snapshot. `resting` (the contracts' resting sells) lowers what an open position
+// counts at to no more than the price of the sells covering it; `values` is what each row counts at, `marks` its live price.
+async function valuationOf(userId: string, broker: string, stats: { trades: any[]; closedTrades: any[] }, resting?: Map<string, RestingSell[]>) {
     const mine = (t: any) => t.user === userId && String(t.broker || 'kite') === broker && isOpenedToday(t.entryTime);
     // A trade whose price or quantity is not a positive finite number cannot be valued (num() would turn it into 0 and book a fake profit of
     // mark x qty): it is left out of the total and of the lock, and alerted once per 10 min. A non-finite realizedPnL counts 0 (under-counts: safe).
@@ -55,20 +59,32 @@ export async function checkOne(userId: string, broker: string, cap: number, stat
     realized += open.reduce((s, t) => s + num(t.realizedPnL), 0); // partial exits of a still-open trade
     const marks = new Map<any, number>();
     for (const t of open) marks.set(t, await markOf(t));
-    const unrealized = open.reduce((s, t) => s + (marks.get(t)! - num(t.price)) * num(t.quantity), 0);
-    const total = realized + unrealized;
+    const values = resting ? cappedMarks(open, marks, resting) : marks;
+    const unrealized = open.reduce((s, t) => s + (values.get(t)! - num(t.price)) * num(t.quantity), 0);
+    return { open, realized, marks, values, total: realized + unrealized };
+}
+
+// `freshStats` re-reads the snapshot after the resting sells (see restingByContract); by default the given one is used.
+export async function checkOne(userId: string, broker: string, cap: number, stats: { trades: any[]; closedTrades: any[] }, latchedBrokers: Set<string>,
+    freshStats: () => Promise<{ trades: any[]; closedTrades: any[] }> = async () => stats): Promise<void> {
+    let view = await valuationOf(userId, broker, stats);
 
     if (!latchedBrokers.has(broker)) {
-        if (!Number.isFinite(total)) { nonFiniteAlert.report(`${userId}|${broker}:total`, `[GlobalMaxProfit] ${userId} ${broker}: total is ${String(total)} - NOT tripping`); return; }
-        if (!(total >= cap)) return;
-        if (!(await latchGlobalMaxProfit(userId, broker, { pnl: total, cap }))) return; // not durable: retry next cycle rather than act on a latch that would vanish
+        if (!Number.isFinite(view.total)) { nonFiniteAlert.report(`${userId}|${broker}:total`, `[GlobalMaxProfit] ${userId} ${broker}: total is ${String(view.total)} - NOT tripping`); return; }
+        if (!(view.total >= cap)) return; // the resting sells can only lower the total
+        // About to trip: judged again with the quantity covered by a resting sell valued at no more than its price (a price above it is a fill not booked yet).
+        const resting = await restingByContract(view.open);
+        view = await valuationOf(userId, broker, await freshStats(), resting);
+        if (!(Number.isFinite(view.total) && view.total >= cap)) return;
+        if (!(await latchGlobalMaxProfit(userId, broker, { pnl: view.total, cap }))) return; // not durable: retry next cycle rather than act on a latch that would vanish
         latchedBrokers.add(broker);
-        Log.log(`[GlobalMaxProfit] MAX PROFIT TRIPPED - ${userId} on ${broker}: total=${Math.round(total)} threshold=${cap} (realized=${Math.round(realized)}) - locking the cap on ${open.length} open position(s), no new orders for the rest of the day`);
+        Log.log(`[GlobalMaxProfit] MAX PROFIT TRIPPED - ${userId} on ${broker}: total=${Math.round(view.total)} threshold=${cap} (realized=${Math.round(view.realized)}) - locking the cap on ${view.open.length} open position(s), no new orders for the rest of the day`);
     }
+    const { open, realized, marks, values } = view;
 
     // Latched: every open position of this strategy on this broker rests ONE limit sell at the price that clears the cap.
     const legs = new Map<any, LockLeg>();
-    for (const t of open) legs.set(t, { qty: num(t.quantity), soldQty: 0, entry: num(t.price), pnlRef: num(t.price), lastLtp: marks.get(t), sellQty: 0, sellPrice: 0 });
+    for (const t of open) legs.set(t, { qty: num(t.quantity), soldQty: 0, entry: num(t.price), pnlRef: num(t.price), lastLtp: values.get(t), sellQty: 0, sellPrice: 0 }); // the others count as in the total; the floor below uses the live price
     // `realized` already includes the partial exits of open trades, so the legs carry only their remaining quantity (soldQty 0).
     for (const t of open) {
         const key = `${userId}|${broker}|${t.tsym}`;
@@ -144,7 +160,7 @@ async function runOnce(list: Strategy[]): Promise<void> {
                 const cap = c.cap;
                 if (!(cap > 0)) continue;
                 if (broker === 'paper') continue; // the paper broker has no global max-profit latch
-                try { await checkOne(c.userId, broker, cap, stats, latched); } catch (e) { Log.log(`[GlobalMaxProfit] ${c.userId} ${broker} check failed:`, e); }
+                try { await checkOne(c.userId, broker, cap, stats, latched, () => OrderClient.getInstance().stats()); } catch (e) { Log.log(`[GlobalMaxProfit] ${c.userId} ${broker} check failed:`, e); }
             }
         }
     } catch (e) {

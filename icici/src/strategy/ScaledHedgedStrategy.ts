@@ -20,6 +20,7 @@ import { localDayKey } from './dayKey';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
 import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS, isNonTransientRejection, MAX_NON_TRANSIENT, isCoveredByOthers, COVERED_RETRY_MS } from './maxProfitLock';
 import { effectiveMaxProfit } from './effectiveMaxProfit';
+import { RestingSell, legRestingSells, noteRestingPlaced, noteRestingFilled, restingFromPending } from './restingCover';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
 import { entryStartTime, isBeforeEntryStart } from '../util/entryStart';
@@ -113,6 +114,7 @@ export interface SimpleLeg {
     sellQty: number;     // quantity currently resting as a limit sell
     sellShortfall?: number; // quantity of the leg with NO resting sell although others rest (a placement the broker clamped, or a restart that found fewer resting sells than the leg holds): placed from the leg's ticks
     sellPrice: number;
+    resting?: RestingSell[]; // what rests, per placement price: the max-profit total values that quantity at no more than it (restingCover.ts)
     niftyAt?: number;    // Nifty LTP when this leg was bought (the stacking guard's reference; absent on adopted / older legs)
     hedgeSame?: boolean; // the held-back hedge follows the leg's direction (it closed at a profit) instead of going opposite
     hedgeWaiting?: boolean; // the hedge for this leg is held back by the stacking guard (retried from Nifty ticks once the leg is closed)
@@ -158,19 +160,26 @@ export default class ScaledHedgedStrategy extends Strategy {
     private tripGuard = new TripGuard(); // retry backoff / fill-event wait of the maxProfit trip sells (in memory throttle only)
     private settling = new Set<string>();        // leg ids whose pending hedge / add buy is being settled against the broker
     private lastPendingSettle = new Map<string, number>();
+    private placing = new Map<string, RestingSell>(); // leg id -> the resting sell whose placement is in flight (it may already rest, or have filled)
     private busy = new Set<string>();           // leg ids with a hedge / double-up / sell placement in flight
     private lastSellAttempt = new Map<string, number>();
     private lastEodAttempt = 0;
     private lastStrandedCancel = 0;
     private lastWaitingHedgeRetry = 0;
     private lastDoubleAttempt = new Map<string, number>();
-    private gateLog = new GateLogger('[ScaledHedgedStrategy] gate:', PCR_RECHECK_MS);
+    private gateLog = new GateLogger(`${this.tag} gate:`, PCR_RECHECK_MS);
 
     constructor(userId?: string) {
         super(userId);
     }
 
     receive(_oldStats: unknown, _newStats: unknown) {}
+
+    // Every log line names the type AND the instance: the per-broker instances of one block share the type (2026-11-26: the status script could not tell
+    // their lines apart). The type stays first, so the existing log filters (`<Type>]`) still match.
+    private get tag(): string { return `[ScaledHedgedStrategy] [${this.userId}]`; }
+    // For the shared helpers, which add the outer brackets themselves.
+    private get helperTag(): string { return `ScaledHedgedStrategy] [${this.userId}`; }
 
     private cfg(): any {
         return this.instanceConfig();
@@ -199,12 +208,35 @@ export default class ScaledHedgedStrategy extends Strategy {
     private nonFiniteAlert = new NonFiniteAlert();
 
     // The maxProfit total of this broker's legs, CE and PE together: realized fills since counting started plus each open leg valued from its
-    // pnlRef (entry when absent). A leg with no tick yet, still waiting for its reference tick, or with a non-numeric lastLtp / entry / pnlRef / quantity counts as 0
+    // pnlRef (entry when absent); the quantity covered by a resting sell is valued at no more than its price (restingCover.ts). A leg with no tick yet, still waiting for its reference tick, or with a non-numeric lastLtp / entry / pnlRef / quantity counts as 0
     // (the last kind is alerted, once per 10 min); a non-finite total never trips (finiteGuard.ts).
     private profitTotal(): number {
         return profitTotalOf(this.userId, this.state.realizedPnl, this.openLegs().map((leg) => ({
-            id: leg.id, remaining: this.remaining(leg), lastLtp: leg.lastLtp, ref: leg.pnlRef ?? leg.entry, pending: leg.pnlRefPending,
+            id: leg.id, remaining: this.remaining(leg), lastLtp: leg.lastLtp, ref: leg.pnlRef ?? leg.entry, pending: leg.pnlRefPending, resting: this.restingOf(leg),
         })), this.nonFiniteAlert);
+    }
+
+    // The leg's resting sells plus one whose placement is in flight.
+    private restingOf(leg: SimpleLeg): RestingSell[] {
+        const inFlight = this.placing.get(leg.id);
+        return inFlight ? [...legRestingSells(leg), inFlight] : legRestingSells(leg);
+    }
+
+    // Rebuilds the leg's resting record from the order side's pending sells; unreadable leaves it as it is.
+    private async readResting(leg: SimpleLeg): Promise<void> {
+        try {
+            leg.resting = restingFromPending(leg, await OrderClient.getInstance().getPendingSells(this.userId, this.brokerOrKite(), leg.tsym));
+        } catch (e) {
+            Log.log(`${this.tag} could not read the resting sells of ${leg.tsym}:`, e);
+        }
+    }
+
+    // The legs the locked price of `leg` is computed over: another leg whose first sell is being placed counts at that price, as in the trip total.
+    private lockView(leg: SimpleLeg): SimpleLeg[] {
+        return this.openLegs().map((l) => {
+            const p = this.placing.get(l.id);
+            return l !== leg && p && !(l.sellQty > 0) ? { ...l, sellQty: p.qty, sellPrice: p.price } : l;
+        });
     }
 
     private async checkMaxProfit(): Promise<void> {
@@ -214,7 +246,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         if (!shouldTrip(this.userId, total, cap, this.nonFiniteAlert)) return; // total >= cap, and only for a finite total (NaN must not trip)
         this.state.profitTripped = true; // synchronous, before any await: only one caller runs the close
         this.save();
-        Log.log(`[ScaledHedgedStrategy] MAX PROFIT TRIPPED - total=${Math.round(total)} threshold=${cap} (realized=${Math.round(this.state.realizedPnl)}) - closing every open leg of ${this.userId}, no new orders for the rest of the day`);
+        Log.log(`${this.tag} MAX PROFIT TRIPPED - total=${Math.round(total)} threshold=${cap} (realized=${Math.round(this.state.realizedPnl)}) - closing every open leg of ${this.userId}, no new orders for the rest of the day`);
         await this.closeAllLegs('MAX PROFIT');
     }
 
@@ -278,14 +310,14 @@ export default class ScaledHedgedStrategy extends Strategy {
 
     private checkCarried(): Promise<void> {
         if (!this.state.carried?.length) return Promise.resolve();
-        return reportCarried({ tag: 'ScaledHedgedStrategy', userId: this.userId, batches: this.state.carried, persist: () => this.save() });
+        return reportCarried({ tag: this.helperTag, userId: this.userId, batches: this.state.carried, persist: () => this.save() });
     }
 
     private save(): void {
         try {
             fs.writeFileSync(this.stateFile(), JSON.stringify(this.state));
         } catch (e: any) {
-            Log.log(`[ScaledHedgedStrategy] ALERT: could not persist state: ${e?.message ?? e}`);
+            Log.log(`${this.tag} ALERT: could not persist state: ${e?.message ?? e}`);
         }
     }
 
@@ -355,7 +387,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         // Anything else (unconfirmed fill, timeout, transport error) leaves the outcome unknown: it may be live.
         if (latch) {
             this.manualReview = true;
-            Log.log(`[ScaledHedgedStrategy] ALERT: ${what} may be live at the broker - no new buys until it is reviewed and the strategy is reset: ${msg}`);
+            Log.log(`${this.tag} ALERT: ${what} may be live at the broker - no new buys until it is reviewed and the strategy is reset: ${msg}`);
         }
         return false;
     }
@@ -370,9 +402,9 @@ export default class ScaledHedgedStrategy extends Strategy {
 
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         this.ensureLoaded();
-        const openTrades = await fetchOpenTradesWithRetry(this.userId, 'ScaledHedgedStrategy', maxAttempts, retryDelayMs);
+        const openTrades = await fetchOpenTradesWithRetry(this.userId, this.helperTag, maxAttempts, retryDelayMs);
         if (!openTrades) {
-            Log.log('[ScaledHedgedStrategy] reconcile: order query exhausted retries, blocking new entries until next restart');
+            Log.log(`${this.tag} reconcile: order query exhausted retries, blocking new entries until next restart`);
             this.blocked = true;
             return;
         }
@@ -383,7 +415,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         // A leg the broker no longer holds that the platform's OWN order sold (a lock-profits sell that filled while this strategy was disabled and so
         // was not told) is booked as a normal close here; only what no platform sell explains is closed outside the platform below.
         await bookPlatformSoldLegs({
-            tag: this.name, userId: this.userId, broker: this.brokerOrKite(),
+            tag: this.helperTag, userId: this.userId, broker: this.brokerOrKite(),
             legs: Object.values(this.state.legs),
             gone: this.openLegs().filter((leg) => { const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym); return !t || !(Number(t.quantity) > 0); }),
             seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null, partQty: this.state.sellQtys,
@@ -403,11 +435,11 @@ export default class ScaledHedgedStrategy extends Strategy {
             }
             if (Number(t.quantity) < this.remaining(leg)) {
                 // Partly sold outside the platform (a sell in the broker's app, booked by the sync): the leg continues with what is held.
-                Log.log(`[ScaledHedgedStrategy] ALERT: reconcile: ${leg.tsym} holds ${Number(t.quantity)} of the ${this.remaining(leg)} recorded - ${this.remaining(leg) - Number(t.quantity)} was sold outside the platform, continuing with the held quantity (its P&L is not in this strategy's realizedPnl)`);
+                Log.log(`${this.tag} ALERT: reconcile: ${leg.tsym} holds ${Number(t.quantity)} of the ${this.remaining(leg)} recorded - ${this.remaining(leg) - Number(t.quantity)} was sold outside the platform, continuing with the held quantity (its P&L is not in this strategy's realizedPnl)`);
             }
             const pendingAdd = Object.values(this.state.legs).some((l) => l.pendingHedge?.addToLegId === leg.id);
             if (pendingAdd && Number(t.quantity) > this.remaining(leg)) {
-                Log.log(`[ScaledHedgedStrategy] reconcile: ${leg.tsym} holds ${Number(t.quantity)} > ${this.remaining(leg)} recorded and an add buy is pending - the quantity is booked when that buy is settled`);
+                Log.log(`${this.tag} reconcile: ${leg.tsym} holds ${Number(t.quantity)} > ${this.remaining(leg)} recorded and an add buy is pending - the quantity is booked when that buy is settled`);
                 this.watch(leg);
                 continue;
             }
@@ -436,7 +468,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             this.state.legs[leg.id] = leg;
             adopted.push(leg);
             this.watch(leg);
-            Log.log(`[ScaledHedgedStrategy] reconcile: adopted unknown broker position ${leg.tsym} qty=${leg.qty} entry=${leg.entry}`);
+            Log.log(`${this.tag} reconcile: adopted unknown broker position ${leg.tsym} qty=${leg.qty} entry=${leg.entry}`);
         }
         if (rights.size > 1) for (const l of adopted) l.hedged = true;
         // An open leg marked hedged with no child leg, no pending record and no open leg on the hedge side is either a legitimate no-child case (first
@@ -444,20 +476,22 @@ export default class ScaledHedgedStrategy extends Strategy {
         // They cannot be told apart from state alone, so nothing is cleared (a wrong clear could buy a second hedge): it is only reported.
         for (const leg of this.openLegs()) {
             if (leg.hedged && !leg.noFunds && !leg.pendingHedge && !leg.restarted && !Object.values(this.state.legs).some((l) => l.parentId === leg.id) && !this.openLegs().some((l) => l.right === opposite(leg.right))) {
-                Log.log(`[ScaledHedgedStrategy] ALERT: reconcile: ${leg.tsym} is open and marked hedged but has no hedge leg and no ${opposite(leg.right)} leg is open - check whether its hedge was ever filled (state file: set hedged false to have it hedged on the next adverse move)`);
+                Log.log(`${this.tag} ALERT: reconcile: ${leg.tsym} is open and marked hedged but has no hedge leg and no ${opposite(leg.right)} leg is open - check whether its hedge was ever filled (state file: set hedged false to have it hedged on the next adverse move)`);
             }
         }
         // Which legs already have a resting sell (so ticks do not place a second one).
         for (const leg of this.openLegs()) {
             try {
                 const pending = await OrderClient.getInstance().getPendingSells(this.userId, this.brokerOrKite(), leg.tsym);
+                leg.resting = restingFromPending(leg, pending); // before the price below is assumed: an assumed price never caps the max-profit total
                 leg.sellQty = pending.reduce((s, p) => s + Number(p.quantity || 0), 0);
+                if (leg.resting.length && !leg.resting.some((r) => r.price === leg.sellPrice)) leg.sellPrice = leg.resting[0].price; // the order side's price wins over a stale record
                 if (leg.sellQty > 0 && !leg.sellPrice) leg.sellPrice = roundToTick(leg.entry + this.priceDiff());
                 // Some of the leg rests but not all of it (2026-11-11: a clamped placement after a double-up left 325 of 650 resting): the rest is placed from ticks.
                 leg.sellShortfall = leg.sellQty > 0 && leg.sellQty < this.remaining(leg) ? this.remaining(leg) - leg.sellQty : 0;
-                if (leg.sellShortfall > 0) Log.log(`[ScaledHedgedStrategy] ALERT: reconcile: ${leg.tsym} holds ${this.remaining(leg)} but only ${leg.sellQty} rests as a sell - placing the other ${leg.sellShortfall} from ticks`);
+                if (leg.sellShortfall > 0) Log.log(`${this.tag} ALERT: reconcile: ${leg.tsym} holds ${this.remaining(leg)} but only ${leg.sellQty} rests as a sell - placing the other ${leg.sellShortfall} from ticks`);
             } catch (e) {
-                Log.log(`[ScaledHedgedStrategy] reconcile: could not read pending sells for ${leg.tsym}; assuming none rest:`, e);
+                Log.log(`${this.tag} reconcile: could not read pending sells for ${leg.tsym}; assuming none rest:`, e);
                 leg.sellQty = 0;
             }
         }
@@ -476,11 +510,11 @@ export default class ScaledHedgedStrategy extends Strategy {
         if (lost.firstOrderProfit) {
             leg.hedged = true;
             leg.restarted = true;
-            Log.log(`[ScaledHedgedStrategy] ALERT: reconcile: ${leg.tsym} (${leg.id}) closed at a profit with no hedge and its follow-up was never run - no same-direction re-buy, the contract selection runs again for a new root`);
+            Log.log(`${this.tag} ALERT: reconcile: ${leg.tsym} (${leg.id}) closed at a profit with no hedge and its follow-up was never run - no same-direction re-buy, the contract selection runs again for a new root`);
         } else {
             leg.hedgeWaiting = true;
             leg.hedgeSame = lost.same;
-            Log.log(`[ScaledHedgedStrategy] ALERT: reconcile: ${leg.tsym} (${leg.id}) closed by the platform's own sell (${leg.soldQty} @ ${(leg.soldValue / leg.soldQty).toFixed(2)}, entry ${leg.entry.toFixed(2)}) with its follow-up never run - the hedge is queued (hedgeWaiting): the ${lost.same ? 'same' : 'opposite'} right is bought from the next Nifty ticks (a reconcile places no order)`);
+            Log.log(`${this.tag} ALERT: reconcile: ${leg.tsym} (${leg.id}) closed by the platform's own sell (${leg.soldQty} @ ${(leg.soldValue / leg.soldQty).toFixed(2)}, entry ${leg.entry.toFixed(2)}) with its follow-up never run - the hedge is queued (hedgeWaiting): the ${lost.same ? 'same' : 'opposite'} right is bought from the next Nifty ticks (a reconcile places no order)`);
         }
         this.save();
     }
@@ -499,7 +533,7 @@ export default class ScaledHedgedStrategy extends Strategy {
                 this.lastPcr = { value, at: now };
             } catch (e) {
                 this.pcrRetryAt = now + 30_000;
-                Log.log('[ScaledHedgedStrategy] PCR check failed, blocking entry (fail-closed):', e);
+                Log.log(`${this.tag} PCR check failed, blocking entry (fail-closed):`, e);
                 this.lastPcr = null;
                 return null;
             }
@@ -541,7 +575,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             if (right == null) return;
             await this.openRoot(right, quote.ltp, qty, maxInvestment);
         } catch (e) {
-            Log.log('[ScaledHedgedStrategy] root entry failed:', e);
+            Log.log(`${this.tag} root entry failed:`, e);
         } finally {
             this.entering = false;
         }
@@ -557,12 +591,12 @@ export default class ScaledHedgedStrategy extends Strategy {
         for (const leg of stranded) {
             try {
                 const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
-                if (res.cancelFailed) { Log.log(`[ScaledHedgedStrategy] ALERT: could not cancel the stranded resting sell of the closed leg ${leg.id} ${leg.tsym} - retried in a minute`); continue; }
+                if (res.cancelFailed) { Log.log(`${this.tag} ALERT: could not cancel the stranded resting sell of the closed leg ${leg.id} ${leg.tsym} - retried in a minute`); continue; }
                 leg.cancelSell = false;
                 this.save();
-                Log.log(`[ScaledHedgedStrategy] cancelled the stranded resting sell of the closed leg ${leg.id} ${leg.tsym} (this strategy holds none of it)${res.filledQty > 0 ? ` - ALERT: ${res.filledQty} had filled meanwhile` : ''}`);
+                Log.log(`${this.tag} cancelled the stranded resting sell of the closed leg ${leg.id} ${leg.tsym} (this strategy holds none of it)${res.filledQty > 0 ? ` - ALERT: ${res.filledQty} had filled meanwhile` : ''}`);
             } catch (e) {
-                Log.log(`[ScaledHedgedStrategy] ALERT: stranded resting sell of ${leg.tsym} not cancelled (retried in a minute):`, e);
+                Log.log(`${this.tag} ALERT: stranded resting sell of ${leg.tsym} not cancelled (retried in a minute):`, e);
             }
         }
     }
@@ -590,7 +624,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         try {
             trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
         } catch (e) {
-            Log.log('[ScaledHedgedStrategy] root buy failed:', e);
+            Log.log(`${this.tag} root buy failed:`, e);
             if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) { // definitely not placed: the next tick may try again, except for funds
                 if (isInsufficientFunds(e)) this.giveUpRoot(contract.tradingSymbol, e);
                 return;
@@ -599,21 +633,21 @@ export default class ScaledHedgedStrategy extends Strategy {
             const res = await this.resolveUnconfirmedBuy(contract);
             if (res.kind === 'none') {
                 if (isInsufficientFunds(e)) { this.giveUpRoot(contract.tradingSymbol, e); return; }
-                Log.log(`[ScaledHedgedStrategy] root buy of ${contract.tradingSymbol} was cancelled with 0 filled - no position, a new root may be tried`);
+                Log.log(`${this.tag} root buy of ${contract.tradingSymbol} was cancelled with 0 filled - no position, a new root may be tried`);
                 return;
             }
             if (res.kind === 'unknown') {
                 this.manualReview = true;
-                Log.log(`[ScaledHedgedStrategy] ALERT: root buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
+                Log.log(`${this.tag} ALERT: root buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
                 return;
             }
             trade = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
-            Log.log(`[ScaledHedgedStrategy] root buy of ${contract.tradingSymbol} had filled after all: adopting qty=${res.qty} @${res.price}`);
+            Log.log(`${this.tag} root buy of ${contract.tradingSymbol} had filled after all: adopting qty=${res.qty} @${res.price}`);
         }
         const leg = this.addLeg(trade, contract, right, 'root', false);
         this.setPair({ [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } });
         this.save();
-        Log.log(`[ScaledHedgedStrategy] root ${right} ${leg.tsym} qty=${leg.qty} @${leg.entry}`);
+        Log.log(`${this.tag} root ${right} ${leg.tsym} qty=${leg.qty} @${leg.entry}`);
         await this.placeSell(leg);
     }
 
@@ -645,6 +679,7 @@ export default class ScaledHedgedStrategy extends Strategy {
     private bookPlatformSell(leg: SimpleLeg, qty: number, price: number): void {
         const ref = leg.pnlRefPending ? price : (leg.pnlRef ?? leg.entry);
         this.state.realizedPnl += qty * (price - ref);
+        noteRestingFilled(leg, qty);
         leg.soldQty += qty;
         leg.soldValue += qty * price;
         if (leg.soldQty < leg.qty) return; // the rest is closed neutral by the caller (no platform sell behind it)
@@ -657,7 +692,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         const avgSell = leg.soldValue / leg.soldQty;
         const pnl = (avgSell - leg.entry) * leg.qty;
         this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
-        Log.log(`[ScaledHedgedStrategy] ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
+        Log.log(`${this.tag} ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
     }
 
     // ---- resting sell ----
@@ -667,7 +702,7 @@ export default class ScaledHedgedStrategy extends Strategy {
     // P&L accounting: NEUTRAL. The real exit was not seen here, so nothing is added to realizedPnl / the maxProfit total (the closedTrades rows
     // the sync booked carry the real P&L; booking it again here would double count it) and the leg's open value leaves the total with it.
     private closeOutside(leg: SimpleLeg, why: string): void {
-        Log.log(`[ScaledHedgedStrategy] ALERT: ${why}: ${leg.tsym} (${this.remaining(leg)} left to sell) is no longer held by the broker - closed outside the platform, marking the leg closed (neutral P&L, not added to realizedPnl)`);
+        Log.log(`${this.tag} ALERT: ${why}: ${leg.tsym} (${this.remaining(leg)} left to sell) is no longer held by the broker - closed outside the platform, marking the leg closed (neutral P&L, not added to realizedPnl)`);
         leg.status = 'closed';
         leg.sellQty = 0;
         leg.sellShortfall = 0;
@@ -687,14 +722,14 @@ export default class ScaledHedgedStrategy extends Strategy {
         const hedgeWaiting = leg.hedgeWaiting;
         try {
             await bookPlatformSoldLegs({
-                tag: this.name, userId: this.userId, broker: this.brokerOrKite(),
+                tag: this.helperTag, userId: this.userId, broker: this.brokerOrKite(),
                 legs: Object.values(this.state.legs), gone: [leg],
                 seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null, partQty: this.state.sellQtys,
                 markSeen: (ids) => this.noteSeenSells(ids),
                 book: (l, qty, price) => this.bookPlatformSell(l, qty, price),
             });
         } catch (e) {
-            Log.log(`[ScaledHedgedStrategy] ${why}: could not look up the platform's own sells of ${leg.tsym}:`, e);
+            Log.log(`${this.tag} ${why}: could not look up the platform's own sells of ${leg.tsym}:`, e);
         }
         if ((leg.status as string) === 'closed') {
             leg.hedgeWaiting = hedgeWaiting; // bookPlatformSell clears it (a reconcile places nothing); a live close keeps it as updateTrade does
@@ -719,7 +754,7 @@ export default class ScaledHedgedStrategy extends Strategy {
     // retries every SELL_RETRY_MS and would ALERT each time (live 2026-11-18, 20+ times). One plain line, then the next try is COVERED_RETRY_MS away.
     private waitCovered(leg: SimpleLeg, quantity: number): void {
         this.lastSellAttempt.set(leg.id, Date.now() + COVERED_RETRY_MS - SELL_RETRY_MS);
-        Log.log(`[ScaledHedgedStrategy] resting sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min`);
+        Log.log(`${this.tag} resting sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min`);
     }
 
     private async placeSell(leg: SimpleLeg): Promise<void> {
@@ -729,16 +764,19 @@ export default class ScaledHedgedStrategy extends Strategy {
         this.busy.add(leg.id);
         this.lastSellAttempt.set(leg.id, Date.now());
         const price = roundToTick(leg.entry + this.priceDiff());
+        this.placing.set(leg.id, { qty: quantity, price });
         try {
             const res = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
             });
             this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
+            this.placing.delete(leg.id); // refused: nothing is known to rest
             if (await this.closeIfNotHeld(leg, e)) return;
             if (isCoveredByOthers(e)) { this.waitCovered(leg, quantity); return; }
-            Log.log(`[ScaledHedgedStrategy] ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+            Log.log(`${this.tag} ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
+            this.placing.delete(leg.id);
             this.busy.delete(leg.id);
         }
     }
@@ -752,9 +790,10 @@ export default class ScaledHedgedStrategy extends Strategy {
         leg.sellQty = got;
         leg.sellShortfall = requested - got;
         leg.sellPrice = price;
+        noteRestingPlaced(leg, got, price, false);
         this.save();
-        Log.log(`[ScaledHedgedStrategy] resting sell ${leg.tsym} qty=${got} @${price}`);
-        if (got < requested) Log.log(`[ScaledHedgedStrategy] ALERT: only ${got}/${requested} of ${leg.tsym} placed as a resting sell (clamped by the broker's guard) - placing the other ${requested - got} from ticks`);
+        Log.log(`${this.tag} resting sell ${leg.tsym} qty=${got} @${price}`);
+        if (got < requested) Log.log(`${this.tag} ALERT: only ${got}/${requested} of ${leg.tsym} placed as a resting sell (clamped by the broker's guard) - placing the other ${requested - got} from ticks`);
     }
 
     // Places the quantity of a leg that has no resting sell while others rest (sellShortfall). Capped at what the leg still holds.
@@ -765,29 +804,34 @@ export default class ScaledHedgedStrategy extends Strategy {
         this.busy.add(leg.id);
         this.lastSellAttempt.set(leg.id, Date.now());
         const price = roundToTick(leg.entry + this.priceDiff());
+        this.placing.set(leg.id, { qty: quantity, price });
         try {
             const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
             });
             const placed = Number(res?.placedQuantity);
             const got = Number.isFinite(placed) && placed >= 0 ? Math.min(placed, quantity) : quantity;
+            noteRestingPlaced(leg, got, price, true);
             leg.sellQty += got;
             leg.sellShortfall = quantity - got;
             this.save();
-            Log.log(`[ScaledHedgedStrategy] resting sell (rest of the leg) ${leg.tsym} qty=${got} @${price}${leg.sellShortfall > 0 ? `, ${leg.sellShortfall} still unplaced` : ''}`);
+            Log.log(`${this.tag} resting sell (rest of the leg) ${leg.tsym} qty=${got} @${price}${leg.sellShortfall > 0 ? `, ${leg.sellShortfall} still unplaced` : ''}`);
         } catch (e) {
+            this.placing.delete(leg.id);
             if (String((e as any)?.message ?? e).includes('nothing sellable')) {
                 // Kite's never-short guard: nothing is left to sell, so the whole position already rests (the platform's pending list had missed an order,
                 // live 2026-11-11 14:15: two resting sells of 325 on a 650 leg). Not a gap: stop retrying.
                 leg.sellShortfall = 0;
+                await this.readResting(leg); // only what the order side tracks counts as resting in the max-profit total
                 this.save();
-                Log.log(`[ScaledHedgedStrategy] ${leg.tsym}: the broker has nothing left to sell, so the rest of the leg already rests - no further sell placed`);
+                Log.log(`${this.tag} ${leg.tsym}: the broker has nothing left to sell, so the rest of the leg already rests - no further sell placed`);
             } else if (isCoveredByOthers(e)) {
                 this.waitCovered(leg, quantity);
             } else {
-                Log.log(`[ScaledHedgedStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+                Log.log(`${this.tag} ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
             }
         } finally {
+            this.placing.delete(leg.id);
             this.busy.delete(leg.id);
         }
     }
@@ -889,13 +933,13 @@ export default class ScaledHedgedStrategy extends Strategy {
         leg.hedgeWaiting = false;
         leg.noFunds = true;
         this.save();
-        Log.log(`[ScaledHedgedStrategy] ALERT: hedge buy ${tsym} for ${leg.tsym} (${this.userId}) refused for insufficient funds - not retried: ${(e as any)?.message ?? e}`);
+        Log.log(`${this.tag} ALERT: hedge buy ${tsym} for ${leg.tsym} (${this.userId}) refused for insufficient funds - not retried: ${(e as any)?.message ?? e}`);
     }
 
     private giveUpRoot(tsym: string, e: unknown): void {
         this.state.rootNoFunds = true;
         this.save();
-        Log.log(`[ScaledHedgedStrategy] ALERT: root buy ${tsym} (${this.userId}) refused for insufficient funds - not retried today (reset re-arms): ${(e as any)?.message ?? e}`);
+        Log.log(`${this.tag} ALERT: root buy ${tsym} (${this.userId}) refused for insufficient funds - not retried today (reset re-arms): ${(e as any)?.message ?? e}`);
     }
 
     // `same`: follow the leg's direction (buy the same right) instead of the opposite one - used when the leg closed at a profit.
@@ -908,7 +952,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             // Scaled (G): the same contract already has an open leg: no re-buy.
             leg.hedged = true;
             this.save();
-            Log.log(`[ScaledHedgedStrategy] no re-buy of ${openSame.tsym} after ${leg.tsym} (${reason}): that contract already has an open leg`);
+            Log.log(`${this.tag} no re-buy of ${openSame.tsym} after ${leg.tsym} (${reason}): that contract already has an open leg`);
             return;
         }
         if (openSame) {
@@ -922,14 +966,14 @@ export default class ScaledHedgedStrategy extends Strategy {
                 leg.hedged = true;
                 leg.hedgeWaiting = false;
                 this.save();
-                Log.log(`[ScaledHedgedStrategy] no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle)`);
+                Log.log(`${this.tag} no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle)`);
                 return;
             }
             if (!leg.hedgeWaiting) {
                 leg.hedgeWaiting = true;
                 leg.hedgeSame = same;
                 this.save();
-                Log.log(`[ScaledHedgedStrategy] no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle) - the hedge waits until it is closed`);
+                Log.log(`${this.tag} no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle) - the hedge waits until it is closed`);
             }
             return;
         }
@@ -939,11 +983,11 @@ export default class ScaledHedgedStrategy extends Strategy {
                 leg.hedgeWaiting = true;
                 leg.hedgeSame = same;
                 this.save();
-                Log.log(`[ScaledHedgedStrategy] hedge of ${leg.tsym} (${reason}) held back: ${this.onePerSide() ? `a ${right} leg is already open (onePositionPerSide)` : `${this.openLegs().filter((l) => l.right === right).length} ${right} legs already open (maxLegsPerSide ${this.cfg()?.maxLegsPerSide}) and Nifty ${this.lastNiftyLtp} has not moved back toward the root`}`);
+                Log.log(`${this.tag} hedge of ${leg.tsym} (${reason}) held back: ${this.onePerSide() ? `a ${right} leg is already open (onePositionPerSide)` : `${this.openLegs().filter((l) => l.right === right).length} ${right} legs already open (maxLegsPerSide ${this.cfg()?.maxLegsPerSide}) and Nifty ${this.lastNiftyLtp} has not moved back toward the root`}`);
             }
             return;
         }
-        if (leg.hedgeWaiting) { leg.hedgeWaiting = false; if (!this.capHeld.has(leg.id)) Log.log(`[ScaledHedgedStrategy] hedge of ${leg.tsym} released (${reason})`); }
+        if (leg.hedgeWaiting) { leg.hedgeWaiting = false; if (!this.capHeld.has(leg.id)) Log.log(`${this.tag} hedge of ${leg.tsym} released (${reason})`); }
         leg.hedged = true; // synchronous, before any await: a second tick must not buy a second hedge
         if (this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
         this.busy.add(leg.id);
@@ -963,12 +1007,12 @@ export default class ScaledHedgedStrategy extends Strategy {
                 // Scaled (F): not even one lot fits under maxInvestment: held back, retried (own ticks / Nifty ticks) when room appears.
                 leg.hedged = false;
                 leg.hedgeWaiting = true; leg.hedgeSame = same;
-                if (!this.capHeld.has(leg.id)) { this.capHeld.add(leg.id); Log.log(`[ScaledHedgedStrategy] hedge of ${leg.tsym} (${reason}) held back: maxInvestment ${this.cfg()?.maxInvestment} leaves no room for one lot of ${contract.tradingSymbol} (open cost ${Math.round(this.invested())})`); }
+                if (!this.capHeld.has(leg.id)) { this.capHeld.add(leg.id); Log.log(`${this.tag} hedge of ${leg.tsym} (${reason}) held back: maxInvestment ${this.cfg()?.maxInvestment} leaves no room for one lot of ${contract.tradingSymbol} (open cost ${Math.round(this.invested())})`); }
                 this.save();
                 return;
             }
             this.capHeld.delete(leg.id);
-            if (hedgeQty < wanted) Log.log(`[ScaledHedgedStrategy] hedge quantity of ${contract.tradingSymbol} cut ${wanted} -> ${hedgeQty} by maxInvestment`);
+            if (hedgeQty < wanted) Log.log(`${this.tag} hedge quantity of ${contract.tradingSymbol} cut ${wanted} -> ${hedgeQty} by maxInvestment`);
             let trade: Trade;
             try {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker());
@@ -976,17 +1020,17 @@ export default class ScaledHedgedStrategy extends Strategy {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
                     if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
-                    Log.log('[ScaledHedgedStrategy] hedge buy failed (not placed, will retry):', e);
+                    Log.log(`${this.tag} hedge buy failed (not placed, will retry):`, e);
                     this.save();
                     return;
                 }
                 // Outcome unknown (timeout / unconfirmed fill): ask the broker instead of freezing the chain.
-                Log.log(`[ScaledHedgedStrategy] hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
+                Log.log(`${this.tag} hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
                     if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
-                    Log.log(`[ScaledHedgedStrategy] hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
+                    Log.log(`${this.tag} hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     this.save();
                     return;
                 }
@@ -994,7 +1038,7 @@ export default class ScaledHedgedStrategy extends Strategy {
                     // hedged stays true (no second buy) but the order is RECORDED: it is settled from the broker (cancelled -> hedged cleared and
                     // retried, filled -> adopted) by the cancel notification / the Nifty-tick poll, also after a restart. No buy meanwhile.
                     leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: hedgeQty, at: Date.now(), ...(isInsufficientFunds(e) ? { noFunds: String((e as any)?.message ?? e) } : {}) };
-                    Log.log(`[ScaledHedgedStrategy] ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - recorded as pending on ${leg.tsym}; no new buys until it is settled from the broker`);
+                    Log.log(`${this.tag} ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - recorded as pending on ${leg.tsym}; no new buys until it is settled from the broker`);
                     this.save();
                     return;
                 }
@@ -1002,18 +1046,18 @@ export default class ScaledHedgedStrategy extends Strategy {
                 adopted.quantity = res.qty;
                 adopted.price = res.price;
                 const hedgeLeg = this.addLeg(adopted, contract, right, 'hedge', false, leg.id);
-                Log.log(`[ScaledHedgedStrategy] hedge buy of ${contract.tradingSymbol} had filled after all: adopted qty=${hedgeLeg.qty} @${hedgeLeg.entry} as the hedge of ${leg.tsym}`);
+                Log.log(`${this.tag} hedge buy of ${contract.tradingSymbol} had filled after all: adopted qty=${hedgeLeg.qty} @${hedgeLeg.entry} as the hedge of ${leg.tsym}`);
                 await this.placeSell(hedgeLeg);
                 return;
             }
             const hedgeLeg = this.addLeg(trade, contract, right, 'hedge', false, leg.id);
-            Log.log(`[ScaledHedgedStrategy] hedged ${leg.tsym} (${reason}) with ${hedgeLeg.tsym} qty=${hedgeLeg.qty} @${hedgeLeg.entry}`);
+            Log.log(`${this.tag} hedged ${leg.tsym} (${reason}) with ${hedgeLeg.tsym} qty=${hedgeLeg.qty} @${hedgeLeg.entry}`);
             await this.placeSell(hedgeLeg);
         } catch (e) {
             // pickContract failed before any order: allow a retry.
             leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // a closed leg gets no option ticks: the Nifty-tick retry picks this up
             this.save();
-            Log.log('[ScaledHedgedStrategy] hedge contract lookup failed, will retry:', e);
+            Log.log(`${this.tag} hedge contract lookup failed, will retry:`, e);
         } finally {
             this.pendingSides.delete(right);
             this.busy.delete(leg.id);
@@ -1041,6 +1085,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         const fillPrice = Number(trade.price);
         const ref = leg.pnlRefPending ? fillPrice : (leg.pnlRef ?? leg.entry);
         this.state.realizedPnl += qty * (fillPrice - ref);
+        noteRestingFilled(leg, qty);
         leg.soldQty += qty;
         leg.soldValue += qty * Number(trade.price);
         if (leg.soldQty < leg.qty) { this.save(); return undefined; } // chunked sell: the rest is still resting
@@ -1051,7 +1096,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         const avgSell = leg.soldValue / leg.soldQty;
         const pnl = (avgSell - leg.entry) * leg.qty;
         this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
-        Log.log(`[ScaledHedgedStrategy] ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
+        Log.log(`${this.tag} ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
         this.save();
         return () => this.afterLegClosed(leg);
     }
@@ -1065,7 +1110,7 @@ export default class ScaledHedgedStrategy extends Strategy {
     // this user's later fills in the queue (see SimpleContinuousStrategy.onFillBooked).
     onFillBooked = async (trade: Trade): Promise<void> => {
         const followUp = this.bookSell(trade);
-        if (followUp) void followUp().catch((e) => Log.log('[ScaledHedgedStrategy] ALERT: follow-up of a closed leg failed:', e));
+        if (followUp) void followUp().catch((e) => Log.log(`${this.tag} ALERT: follow-up of a closed leg failed:`, e));
     };
 
     // What follows a leg that just closed: the max-profit check, then the hedge / re-entry.
@@ -1083,7 +1128,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             leg.hedged = true;
             leg.restarted = true;
             this.save();
-            Log.log(`[ScaledHedgedStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
+            Log.log(`${this.tag} first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
         } else if (!leg.hedged) await this.hedge(leg, 'target met', same);
         else if (!leg.restarted && !leg.noFunds && this.chainDead(leg)) {
             // The chain's last leg closed carrying a stale `hedged` flag (a hedge buy that was cancelled unfilled left it true with no hedge leg; same defect as
@@ -1091,7 +1136,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             // (a loss buys the opposite right, a profit the same one). hedge() keeps every guard (fixed contract, side check, maxInvestment, duplicate protection).
             leg.hedged = false;
             this.save();
-            Log.log(`[ScaledHedgedStrategy] ${leg.tsym} closed as the last leg of the chain with a stale hedged flag and nothing open: continuing the cycle from it`);
+            Log.log(`${this.tag} ${leg.tsym} closed as the last leg of the chain with a stale hedged flag and nothing open: continuing the cycle from it`);
             await this.hedge(leg, same ? 'target met' : 'stop loss', same);
         }
     }
@@ -1148,14 +1193,14 @@ export default class ScaledHedgedStrategy extends Strategy {
                 const held = p.addToLegId ? (p.heldBefore ?? (parent ? this.remaining(parent) : 0)) : 0;
                 const res = await this.resolveUnconfirmedBuy({ tradingSymbol: p.tsym, premium: p.premium }, held);
                 if (leg.pendingHedge !== p) continue; // settled / reset meanwhile
-                if (res.kind === 'unknown') { Log.log(`[ScaledHedgedStrategy] pending ${p.addToLegId ? 'add' : 'hedge'} buy ${p.tsym} of ${leg.tsym} still unresolved (${res.why}) - retrying`); continue; }
+                if (res.kind === 'unknown') { Log.log(`${this.tag} pending ${p.addToLegId ? 'add' : 'hedge'} buy ${p.tsym} of ${leg.tsym} still unresolved (${res.why}) - retrying`); continue; }
                 leg.pendingHedge = undefined;
                 if (res.kind === 'none') {
                     if (p.noFunds) { this.giveUpHedge(leg, p.tsym, p.noFunds); continue; }
                     leg.hedged = false;
                     leg.hedgeWaiting = false;
                     this.save();
-                    Log.log(`[ScaledHedgedStrategy] pending ${p.addToLegId ? 'add' : 'hedge'} buy ${p.tsym} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
+                    Log.log(`${this.tag} pending ${p.addToLegId ? 'add' : 'hedge'} buy ${p.tsym} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     continue;
                 }
                 if (p.addToLegId) {
@@ -1163,17 +1208,17 @@ export default class ScaledHedgedStrategy extends Strategy {
                         this.bookAdd(parent, res.qty, res.price, leg, 'unconfirmed add settled');
                         if (!this.isStopped()) { this.busy.add(parent.id); try { await this.placeSellQty(parent, this.remaining(parent)); } finally { this.busy.delete(parent.id); } }
                     } else {
-                        Log.log(`[ScaledHedgedStrategy] ALERT: the add buy of ${p.tsym} (+${res.qty} @${res.price}) filled but its leg is no longer open - check the broker position by hand`);
+                        Log.log(`${this.tag} ALERT: the add buy of ${p.tsym} (+${res.qty} @${res.price}) filled but its leg is no longer open - check the broker position by hand`);
                         this.save();
                     }
                     continue;
                 }
                 const adopted = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
                 const hedgeLeg = this.addLeg(adopted, { tradingSymbol: p.tsym, token: p.token, exchange: p.exchange, strike: p.strike, premium: p.premium }, p.right, 'hedge', false, leg.id);
-                Log.log(`[ScaledHedgedStrategy] pending hedge buy of ${p.tsym} had filled: adopted qty=${hedgeLeg.qty} @${hedgeLeg.entry} as the hedge of ${leg.tsym}`);
+                Log.log(`${this.tag} pending hedge buy of ${p.tsym} had filled: adopted qty=${hedgeLeg.qty} @${hedgeLeg.entry} as the hedge of ${leg.tsym}`);
                 if (!this.isStopped()) await this.placeSell(hedgeLeg); // when stopped the close-all path sells it
             } catch (e) {
-                Log.log(`[ScaledHedgedStrategy] settling the pending buy of ${p.tsym} failed, retrying:`, e);
+                Log.log(`${this.tag} settling the pending buy of ${p.tsym} failed, retrying:`, e);
             } finally {
                 this.settling.delete(leg.id);
             }
@@ -1195,20 +1240,23 @@ export default class ScaledHedgedStrategy extends Strategy {
         parent.hedged = false; // re-armed from the new average
         parent.hedgeWaiting = false;
         this.save();
-        Log.log(`[ScaledHedgedStrategy] added to ${parent.tsym}: +${got} @${price} (${trigger.tsym} fell ${this.priceDiff()}: ${reason}), now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
+        Log.log(`${this.tag} added to ${parent.tsym}: +${got} @${price} (${trigger.tsym} fell ${this.priceDiff()}: ${reason}), now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
     }
 
     // placeSell for a given quantity while the caller already holds the leg's busy slot.
     private async placeSellQty(leg: SimpleLeg, quantity: number): Promise<void> {
         if (quantity <= 0 || leg.status !== 'open') return;
         const price = roundToTick(leg.entry + this.priceDiff());
+        this.placing.set(leg.id, { qty: quantity, price });
         try {
             const res = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
             });
             this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
-            Log.log(`[ScaledHedgedStrategy] ALERT: resting sell for ${leg.tsym} failed (tick retry follows):`, e);
+            Log.log(`${this.tag} ALERT: resting sell for ${leg.tsym} failed (tick retry follows):`, e);
+        } finally {
+            this.placing.delete(leg.id);
         }
     }
 
@@ -1228,7 +1276,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         if (leg.pnlRefPending) return; // valued from its next tick; the price that locks the cap is unknown until then
         if (this.remaining(leg) <= 0) return;
         if (!this.tripGuard.due(leg.id)) return; // a refused placement / cancel is retried with a growing delay, not every pass
-        const clear = clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap);
+        const clear = clearPrice(leg, this.lockView(leg), this.state.realizedPnl, cap);
         let prev: { qty: number; price: number } | undefined; // the resting sell this pass cancels: put back if its replacement is refused
         if (leg.sellQty > 0 && this.tripGuard.exhausted(leg.id)) return; // refused by the broker MAX_NON_TRANSIENT times: the resting sell stays, no more cancel/replace
         if (leg.sellQty > 0) {
@@ -1246,14 +1294,14 @@ export default class ScaledHedgedStrategy extends Strategy {
             if (heldNow !== undefined && heldNow < this.remaining(leg)) {
                 this.tripGuard.markFill(leg.id);
                 const expired = Date.now() - (this.tripGuard.fillWait(leg.id) ?? Date.now()) > TRIP_FILL_WAIT_MS;
-                if (!expired) { Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${leg.tsym} is (partly) sold per the order side (held ${heldNow} of ${this.remaining(leg)}), waiting for its fill events before re-pricing (nothing cancelled or placed)`); return; }
+                if (!expired) { Log.log(`${this.tag} MAX PROFIT: ${leg.tsym} is (partly) sold per the order side (held ${heldNow} of ${this.remaining(leg)}), waiting for its fill events before re-pricing (nothing cancelled or placed)`); return; }
                 this.tripGuard.clearFill(leg.id);
                 if (heldNow === 0) { await this.closeGone(leg, 'MAX PROFIT (fill events never arrived)'); return; }
             }
             const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
             if (res.cancelFailed) {
                 const n = this.tripGuard.fail(leg.id);
-                if (this.tripGuard.shouldLogFailure(n)) Log.log(`[ScaledHedgedStrategy] MAX PROFIT: could not cancel the resting sell of ${leg.tsym} (it may still fill), retrying with backoff (failure ${n})`);
+                if (this.tripGuard.shouldLogFailure(n)) Log.log(`${this.tag} MAX PROFIT: could not cancel the resting sell of ${leg.tsym} (it may still fill), retrying with backoff (failure ${n})`);
                 return;
             }
             if (leg.sellPrice > 0) prev = { qty: leg.sellQty, price: leg.sellPrice };
@@ -1263,7 +1311,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             if (res.filledQty > 0) {
                 // Part (or all) of the old sell filled while it was cancelled: its fill events update soldQty (they may lag); the next pass sizes what is really left.
                 this.tripGuard.markFill(leg.id);
-                Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${res.filledQty} of ${leg.tsym} sold while cancelling the resting sell - the rest is re-priced on a later pass, once the fills are booked`);
+                Log.log(`${this.tag} MAX PROFIT: ${res.filledQty} of ${leg.tsym} sold while cancelling the resting sell - the rest is re-priced on a later pass, once the fills are booked`);
                 return;
             }
         }
@@ -1275,7 +1323,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             quantity = this.remaining(leg);
             const expired = Date.now() - since > TRIP_FILL_WAIT_MS;
             if (held === 0) {
-                if (!expired) { Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${leg.tsym} is fully sold per the order side, waiting for its fill events (nothing placed)`); return; }
+                if (!expired) { Log.log(`${this.tag} MAX PROFIT: ${leg.tsym} is fully sold per the order side, waiting for its fill events (nothing placed)`); return; }
                 this.tripGuard.clearFill(leg.id);
                 await this.closeGone(leg, 'MAX PROFIT (fill events never arrived)');
                 return;
@@ -1288,7 +1336,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         const safe = this.tripGuard.safeQty(leg.id);
         if (safe !== undefined && safe > 0 && safe < quantity) quantity = safe; // the broker refused the whole leg once (funds/margin) but accepted this much before
         const attempt = this.tripGuard.attempts(leg.id);
-        const price = tripSellPrice(clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap), leg.lastLtp, attempt);
+        const price = tripSellPrice(clearPrice(leg, this.lockView(leg), this.state.realizedPnl, cap), leg.lastLtp, attempt);
         await this.placeTripSell(leg, quantity, price, false, cap, prev);
     }
 
@@ -1303,11 +1351,12 @@ export default class ScaledHedgedStrategy extends Strategy {
             if (add) {
                 const placed = Number(res?.placedQuantity);
                 const got = Number.isFinite(placed) && placed >= 0 ? Math.min(placed, quantity) : quantity;
+                noteRestingPlaced(leg, got, price, true);
                 leg.sellQty += got;
                 leg.sellShortfall = quantity - got;
                 this.save();
             } else this.bookPlacedSell(leg, quantity, price, res);
-            Log.log(`[ScaledHedgedStrategy] MAX PROFIT: resting sell ${leg.tsym} qty=${quantity} @${price} (locks ${cap})`);
+            Log.log(`${this.tag} MAX PROFIT: resting sell ${leg.tsym} qty=${quantity} @${price} (locks ${cap})`);
         } catch (e) {
             const nothingSellable = /nothing sellable/.test(String((e as any)?.message ?? e));
             if (add && nothingSellable) {
@@ -1320,7 +1369,7 @@ export default class ScaledHedgedStrategy extends Strategy {
                 // event its grace, then close the leg; held something else: a resting sell this strategy does not know of, retried with backoff.
                 if ((await heldQuantity(this.userId, leg.token, leg.tsym)) === 0) {
                     if (this.tripGuard.goneExpired(leg.id)) await this.closeGone(leg, 'MAX PROFIT sell refused');
-                    else Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${leg.tsym} has nothing sellable at the broker - waiting for its fill events before closing the leg`);
+                    else Log.log(`${this.tag} MAX PROFIT: ${leg.tsym} has nothing sellable at the broker - waiting for its fill events before closing the leg`);
                     return;
                 }
             }
@@ -1330,17 +1379,17 @@ export default class ScaledHedgedStrategy extends Strategy {
                 // that order fills / is cancelled, so no ALERT and no 5-60 s retry storm - one plain line, the next try in COVERED_RETRY_MS. The locked
                 // sell is not dropped: it is placed as soon as the guard lets it through.
                 const n = this.tripGuard.coveredByOthers(leg.id);
-                if (this.tripGuard.shouldLogCovered(n)) Log.log(`[ScaledHedgedStrategy] MAX PROFIT: the locked sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min (attempt ${n})`);
+                if (this.tripGuard.shouldLogCovered(n)) Log.log(`${this.tag} MAX PROFIT: the locked sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min (attempt ${n})`);
             } else if (isNonTransientRejection(e)) {
                 // The broker refused the order itself (funds / limit / margin / RMS): the same order can never succeed on a retry. One ALERT, a slow bounded
                 // retry sized to what the broker accepted before (the sell just cancelled), and the cancelled sell is put back below so the leg is never bare.
                 const n = this.tripGuard.failNonTransient(leg.id, prev?.qty);
                 if (n <= MAX_NON_TRANSIENT)
-                    Log.log(`[ScaledHedgedStrategy] ALERT: MAX PROFIT locked sell for ${leg.tsym} (${quantity} @${price}, ${this.brokerOrKite()}) REFUSED by the broker, not retryable as is (refusal ${n}/${MAX_NON_TRANSIENT}): ${(e as any)?.message ?? e}.` +
+                    Log.log(`${this.tag} ALERT: MAX PROFIT locked sell for ${leg.tsym} (${quantity} @${price}, ${this.brokerOrKite()}) REFUSED by the broker, not retryable as is (refusal ${n}/${MAX_NON_TRANSIENT}): ${(e as any)?.message ?? e}.` +
                     (this.tripGuard.exhausted(leg.id) ? ' No more cancel/replace while a resting sell is in place: manual review required.' : ` Next attempt in 2 min${prev ? ` sized to ${prev.qty}` : ''}.`));
             } else {
                 const n = this.tripGuard.fail(leg.id);
-                if (this.tripGuard.shouldLogFailure(n)) Log.log(`[ScaledHedgedStrategy] ALERT: MAX PROFIT resting sell for ${leg.tsym} (${quantity} @${price}) failed (failure ${n}; retried with backoff, the price moves toward the live LTP):`, e);
+                if (this.tripGuard.shouldLogFailure(n)) Log.log(`${this.tag} ALERT: MAX PROFIT resting sell for ${leg.tsym} (${quantity} @${price}) failed (failure ${n}; retried with backoff, the price moves toward the live LTP):`, e);
             }
             if (prev && !add && !partialPlaced && leg.status === 'open' && leg.sellQty <= 0) await this.restoreCancelledSell(leg, prev);
         }
@@ -1356,9 +1405,9 @@ export default class ScaledHedgedStrategy extends Strategy {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity: qty, price: prev.price, broker: this.brokerOrKite(),
             });
             this.bookPlacedSell(leg, qty, prev.price, res);
-            Log.log(`[ScaledHedgedStrategy] MAX PROFIT: the locked sell was refused, the previous resting sell of ${leg.tsym} was put back (qty=${qty} @${prev.price}) so the leg stays protected`);
+            Log.log(`${this.tag} MAX PROFIT: the locked sell was refused, the previous resting sell of ${leg.tsym} was put back (qty=${qty} @${prev.price}) so the leg stays protected`);
         } catch (e) {
-            Log.log(`[ScaledHedgedStrategy] ALERT: MAX PROFIT: the locked sell of ${leg.tsym} was refused AND the previous resting sell (${qty} @${prev.price}) could not be put back - the leg has NO resting sell:`, e);
+            Log.log(`${this.tag} ALERT: MAX PROFIT: the locked sell of ${leg.tsym} was refused AND the previous resting sell (${qty} @${prev.price}) could not be put back - the leg has NO resting sell:`, e);
         }
     }
 
@@ -1372,7 +1421,7 @@ export default class ScaledHedgedStrategy extends Strategy {
                 let filled = 0;
                 if (leg.sellQty > 0) {
                     const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
-                    if (res.cancelFailed) { Log.log(`[ScaledHedgedStrategy] ${label}: could not cancel the resting sell of ${leg.tsym}, retrying`); continue; }
+                    if (res.cancelFailed) { Log.log(`${this.tag} ${label}: could not cancel the resting sell of ${leg.tsym}, retrying`); continue; }
                     filled = res.filledQty;
                     leg.sellQty = 0;
                     leg.sellShortfall = 0;
@@ -1382,9 +1431,9 @@ export default class ScaledHedgedStrategy extends Strategy {
                 leg.status = 'closed';
                 this.unwatch(leg);
                 this.save();
-                Log.log(`[ScaledHedgedStrategy] ${label}: closed ${leg.tsym}`);
+                Log.log(`${this.tag} ${label}: closed ${leg.tsym}`);
             } catch (e) {
-                Log.log(`[ScaledHedgedStrategy] ${label} close of ${leg.tsym} failed, retrying:`, e);
+                Log.log(`${this.tag} ${label} close of ${leg.tsym} failed, retrying:`, e);
             } finally {
                 this.busy.delete(leg.id);
             }
@@ -1406,8 +1455,8 @@ export default class ScaledHedgedStrategy extends Strategy {
         for (const l of reopened) { l.restarted = true; l.hedged = true; l.hedgeWaiting = false; } // hedged: nothing follows the closed root
         // A human reset after a stop (max-profit trip / EOD): the closed leaves that were never hedged are deliberate chain ends, not lost follow-ups (scheduleLostFollowUp must not revive them).
         { const parents = new Set(Object.values(this.state.legs).map((l) => l.parentId).filter(Boolean)); for (const l of Object.values(this.state.legs)) if (l.status === 'closed' && !l.hedged && !l.hedgeWaiting && !l.pendingHedge && !parents.has(l.id)) l.hedged = true; }
-        if (reopened.length) Log.log(`[ScaledHedgedStrategy] reset: closed root(s) ${reopened.map((l) => l.tsym).join(', ')} re-opened for selection (root gate open, new root allowed)`);
-        else if (live.length) Log.log(`[ScaledHedgedStrategy] reset: root gate left as is, ${live.length} live/pending leg(s): ${live.map((l) => l.tsym).join(', ')}`);
+        if (reopened.length) Log.log(`${this.tag} reset: closed root(s) ${reopened.map((l) => l.tsym).join(', ')} re-opened for selection (root gate open, new root allowed)`);
+        else if (live.length) Log.log(`${this.tag} reset: root gate left as is, ${live.length} live/pending leg(s): ${live.map((l) => l.tsym).join(', ')}`);
         this.state.rootNoFunds = false;
         this.save();
         this.manualReview = false;

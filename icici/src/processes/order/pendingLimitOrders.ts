@@ -80,6 +80,7 @@ const tracker = new PendingOrderTracker<PendingLimitOrder, KiteSnapshot, 'kite'>
         tradingSymbol: row.tradingSymbol,
         instrumentToken: row.token ?? row.instrumentToken,
         quantity: row.quantity,
+        ...(row.price > 0 ? { price: row.price } : {}),
         exchange: row.exchange,
         action: row.action ?? 'Buy', // pre-2026-09-22 rows predate this field - all were Buy
     }),

@@ -9,7 +9,7 @@ import { CancelledListener, TrackerBroker } from './pendingOrderTracker';
 // The one lookup from a broker name to its pending-order tracker, so orderProcess.ts wires them in loops instead of four
 // copies of every site. Each module's exports are bound methods of its PendingOrderTracker.
 export interface TrackerHandle {
-    find(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number; exchange: OptionExchange }[];
+    find(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number; exchange: OptionExchange; price?: number }[];
     all(): { orderId: string; userId: string; tradingSymbol: string; action: 'Buy' | 'Sell'; quantity: number; exchange: OptionExchange }[];
     load(): Promise<void>;
     poll(): Promise<void>;

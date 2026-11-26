@@ -18,6 +18,9 @@ export interface PendingOrder {
     quantity: number;
     exchange: OptionExchange;
     action: 'Buy' | 'Sell';
+    /** Limit price of a resting limit sell, stored from placement (2026-11-26): the max-profit totals value the quantity it covers at no more than this,
+     *  and the status script shows it. Absent on orders tracked without a limit price or before the field existed. Persisted. */
+    price?: number;
     /** An entry buy put on the poller because the entry call could not establish its outcome: its fill is booked and an explicit cancel finds it,
      *  but a cancel / reject seen by the poll is not told to the cancelled listeners (no strategy placed a resting order). Persisted. */
     quiet?: boolean;

@@ -8,6 +8,8 @@ import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import { disableAllAndLockProfits } from '../lockAllProfits';
 import OrderClient from './OrderClient';
 import { markPrice } from './markPrice';
+import { restingByContract, cappedMarks } from './restingMarks';
+import type { RestingSell } from '../../strategy/restingCover';
 
 // settings.overAllMaxProfit (rupees, optional, absent = off): when the COMBINED day P&L of every strategy on every real broker (realized + open positions at
 // the last tick price, markPrice.ts, trades opened today; the paper broker is not counted) reaches it, the lock-profits action runs once - every strategy is disabled in
@@ -25,14 +27,19 @@ export function overAllMaxProfit(settings?: Record<string, any> | null): number 
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-export async function combinedPnl(stats: { trades: any[]; closedTrades: any[] }): Promise<number> {
+const countedOpen = (stats: { trades: any[] }) => stats.trades.filter((t) => String(t.broker || 'kite') !== 'paper' && isOpenedToday(t.entryTime)
+    && num(t.quantity) > 0 && Number.isFinite(Number(t.price)) && Number(t.price) > 0);
+
+// `resting` (the contracts' resting sells) values the quantity they cover at no more than their price (restingMarks.ts).
+export async function combinedPnl(stats: { trades: any[]; closedTrades: any[] }, resting?: Map<string, RestingSell[]>): Promise<number> {
     const mine = (t: any) => String(t.broker || 'kite') !== 'paper' && isOpenedToday(t.entryTime);
-    const open = stats.trades.filter((t) => mine(t) && num(t.quantity) > 0 && Number.isFinite(Number(t.price)) && Number(t.price) > 0);
+    const open = countedOpen(stats);
     const realized = stats.closedTrades.filter(mine).reduce((s, t) => s + num(t.realizedPnL), 0) + open.reduce((s, t) => s + num(t.realizedPnL), 0);
-    let unrealized = 0;
     // Tick price first; a throttled live quote only for a row no strategy here has a tick for (markPrice.ts).
-    for (const t of open) unrealized += ((await markPrice(t)) - num(t.price)) * num(t.quantity);
-    return realized + unrealized;
+    const marks = new Map<any, number>();
+    for (const t of open) marks.set(t, await markPrice(t));
+    const values = resting ? cappedMarks(open, marks, resting) : marks;
+    return realized + open.reduce((s, t) => s + (values.get(t)! - num(t.price)) * num(t.quantity), 0);
 }
 
 const latchKey = () => ({ ownerType: OVERALL_MAX_PROFIT_OWNER, userId: 'ALL', scope: 'all', day: localDayKey() });
@@ -52,7 +59,13 @@ async function runOnce(orderClient: OrderClient): Promise<void> {
     try {
         const latch = await readLatch();
         if (!latch) {
-            const total = await combinedPnl(await orderClient.stats());
+            const stats = await orderClient.stats();
+            let total = await combinedPnl(stats);
+            // About to trip: judged again with the quantity covered by a resting sell valued at no more than its price (the sells are read first, then a fresh snapshot).
+            if (Number.isFinite(total) && total >= cap) {
+                const resting = await restingByContract(countedOpen(stats));
+                total = await combinedPnl(await orderClient.stats(), resting);
+            }
             if (!Number.isFinite(total)) { nonFiniteAlert.report('overall:total', `[OverAllMaxProfit] total is ${String(total)} - NOT tripping`); return; }
             if (!(total >= cap)) return;
             const col = Mongo.getInstance()?.db.collection('strategyLatches');

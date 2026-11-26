@@ -2764,7 +2764,7 @@ export default class BulkPcrStrategy extends Strategy {
                 // never actually broken. Reusing the same getPendingSells check the
                 // fresh-no-persisted-state fallback below already uses for this reason.
                 if (persistedPos.phase === 'error' && persistedPos.heldTsym) {
-                    const pendingSells = await OrderClient.getInstance()
+                    const pendingSells: { quantity: number }[] = await OrderClient.getInstance()
                         .getPendingSells(this.userId, broker, persistedPos.heldTsym)
                         .catch((e) => {
                             // Unreadable reads as nothing resting, which leaves the slot in 'error' (manual review) - never a new exit.

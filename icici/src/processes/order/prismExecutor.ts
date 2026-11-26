@@ -408,7 +408,7 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
     });
     Log.log(`[order] Bare Prism limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await Prism.getInstance().placeLimitSellBare(tradingSymbol, instrumentId, quantity, price, userId, exchange);
-    trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell' });
+    trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell', price });
     return { orderId, quantity }; // the quantity actually placed (the never-short guard may have clamped it)
 }
 

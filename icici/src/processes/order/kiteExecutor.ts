@@ -785,7 +785,7 @@ export async function placeLimitSellBareOnKite(userId: string, tradingSymbol: st
     const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, price, exchange, () => kiteOwnerCap(userId, tradingSymbol));
     const orderId = placed.orderId;
     // Track the quantity actually placed (the never-short guard may have clamped it) so the fill is booked correctly.
-    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity: placed.quantity, exchange, action: 'Sell' });
+    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity: placed.quantity, exchange, action: 'Sell', price });
     return { orderId, quantity: placed.quantity };
 }
 

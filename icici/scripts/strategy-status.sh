@@ -5,9 +5,12 @@
 # Which strategies: ONLY those enabled in config.yml (expanded per broker the way the platform names instances: <userId>, <userId>-ANT,
 # <userId>-Breeze), shown with zeros until they trade, so a newly enabled strategy appears with no change here. Trades of a disabled
 # strategy are left out of every table (user's rule, 2026-11-13); the by-broker table is filtered the same way (?match=).
-# The resting sell price is not stored on the position: it is read from the strategy's own log line for that contract (today's log, last
-# match): "resting sell @ <price>", or "target <price> / stop <price> protected via <gtt|..>" which shows "<price> (<gtt|..>)". "-" when
-# none is found (no resting sell, e.g. tick-monitored RuleBased).
+# RESTING SELL is what rests NOW for that row's user + broker + contract: the order side's pending sell orders in Mongo (pendingLimitOrders,
+# pendingAntLimitOrders, pendingBreezeLimitOrders, pendingPrismLimitOrders; read only). A filled or cancelled order is not there, a re-priced one
+# is there at its new price. The price is the one stored on the pending order; an order tracked without it (placed by an older process) takes the
+# price of the order process's "Bare .. limit sell .. price=<p> for <user>" log line that placed that order id (today's log), "?" if none.
+# One price covering the whole row prints as "<price>"; otherwise "<price> x<qty>" per price. No pending order: a Kite GTT / exit-monitor line
+# "target <price> / stop <price> protected via <gtt|..>" shows "<price> (<gtt|..>)", else the position's target "<price> (tick)", else "-".
 # By default ONLY trades OPENED today (IST day of the trade's entry time) count, realized and unrealized: a trade bought on an earlier day and
 # sold today, or still open from an earlier day, is left out (?opened=today on /strategyPnl; a trade with no entry time counts as today).
 # With `all` it also counts trades opened on an earlier day but closed today and positions still open from earlier days (?opened=all).
@@ -344,30 +347,67 @@ if(detail){
   }
 }
 if(!detail){console.log("\n(position table unavailable: the API process predates the ?detail=1 option - restart it)");process.exit(0)}
-// Resting sell prices from today log: MomentumAtFixedTime "[MomentumAtFixedTime:<user>] <broker> <tsym>: bought .. - resting sell @ <p>" and
-// SimpleContinuous-style "[<user>] resting sell <tsym> qty=<n> @<p>", HighLow "[HighLow:<user>] .. resting sell <h> @ <p>, the other <h> then trails". Keyed user|tsym only (never tsym alone); the last line wins.
-const sells=new Map();
-try{
-  for(const line of require("fs").readFileSync(process.env.LOG,"utf8").split("\n")){
-    let m=line.match(/\[MomentumAtFixedTime:([^\]]+)\] \w+ (\S+): bought .* resting sell @ ([0-9.]+)/);
-    if(m){sells.set(m[1]+"|"+m[2],+m[3]);continue}
-    m=line.match(/\] \[([^\]]+)\] resting sell (\S+) qty=\d+ ?@ ?([0-9.]+)/);
-    if(m){sells.set(m[1]+"|"+m[2],+m[3]);continue} // keyed by the logging user: a line never shows on another strategy row (an ANT/Breeze/Prism instance falls back to its base id below)
-    // HighLow half-trail: "[HighLow:<user>] <broker> <tsym> qty=<n> avg=<a>: resting sell <h> @ <p>, the other <h> then trails ..." shows the half resting price <p>
-    m=line.match(/\[HighLow:([^\]]+)\] \w+ (\S+) qty=\d+ avg=\S+: resting sell \d+ @ ([0-9.]+),/);
-    if(m){sells.set(m[1]+"|"+m[2],+m[3]);continue}
+// Resting sells: the pending sell orders in Mongo (what rests now), priced from the order itself or, for one tracked without a price, from the
+// "Bare .. limit sell" log line that placed that order id. Keyed user|broker|tsym, never the strategy type or tsym alone.
+const restingSells=async()=>{
+  const {MongoClient}=require(process.env.ROOT+"/node_modules/mongodb");
+  const url=process.env.MONGO_URL||"mongodb://localhost:27017/stocks";
+  const client=await MongoClient.connect(url,{useUnifiedTopology:true,serverSelectionTimeoutMS:3000,connectTimeoutMS:3000});
+  const orders=[];
+  try{
+    for(const [broker,name] of [["kite","pendingLimitOrders"],["ant","pendingAntLimitOrders"],["breeze","pendingBreezeLimitOrders"],["prism","pendingPrismLimitOrders"]])
+      for(const o of await client.db().collection(name).find({}).toArray())
+        if(o.action==="Sell")orders.push({key:o.userId+"|"+broker+"|"+o.tradingSymbol,id:String(o.orderId),qty:Number(o.quantity),price:Number(o.price)>0?Number(o.price):null});
+  }finally{await client.close()}
+  return orders;
+};
+// Fills in the missing prices from the log and returns the "protected via" targets by user|broker|tsym (the last line wins).
+const readLog=orders=>{
+  const protectedBy=new Map(),wanted=new Map(),placedAt=new Map();
+  for(const o of orders)if(o.price===null){if(!wanted.has(o.id))wanted.set(o.id,[]);wanted.get(o.id).push(o)}
+  let text="";try{text=require("fs").readFileSync(process.env.LOG,"utf8")}catch{return protectedBy}
+  let now=0;
+  for(const line of text.split("\n")){
+    const t=line.match(/^\[(\d\d):(\d\d):(\d\d)\]/);
+    if(t)now=t[1]*3600+t[2]*60+ +t[3];
     // CandleEntry family (NextWeek, Breakout): "[Type:<user>] <broker> <tsym> qty=<n> avg=<a>: target <t> / stop <s> protected via gtt"
-    m=line.match(/\[[^\]:]+:([^\]]+)\] \w+ (\S+) qty=\d+ avg=\S+: target ([0-9.]+) \/ stop [0-9.]+ protected via (\w+)/);
-    if(m)sells.set(m[1]+"|"+m[2],{p:+m[3],via:m[4]})
+    let m=line.match(/\[[^\]:]+:([^\]]+)\] (\w+) (\S+) qty=\d+ avg=\S+: target ([0-9.]+) \/ stop [0-9.]+ protected via (\w+)/);
+    if(m)protectedBy.set(m[1]+"|"+m[2]+"|"+m[3],{p:+m[4],via:m[5]});
+    if(!wanted.size)continue;
+    m=line.match(/\[order\] Bare (?:(ANT|Breeze|Prism) )?limit sell (?:\(at best bid\) )?(\S+) qty=(\d+) (?:price=|@ )([0-9.]+) for (\S+)/);
+    if(m){placedAt.set(m[5]+"|"+(m[1]||"kite").toLowerCase()+"|"+m[2],{qty:+m[3],price:+m[4],at:now});continue}
+    // The first mention of the order id after its placement line (the broker answers within seconds) ties the id to that line.
+    for(const id of line.match(/\d{12,}/g)||[])for(const o of wanted.get(id)||[]){
+      const b=placedAt.get(o.key);
+      if(o.price===null&&b&&o.qty<=b.qty&&now>=b.at&&now-b.at<=60)o.price=b.price;
+    }
   }
-}catch{}
+  return protectedBy;
+};
+const restText=(r,orders,protectedBy)=>{
+  const key=r.user+"|"+r.broker+"|"+r.tsym;
+  const mine=orders?orders.filter(o=>o.key===key):[];
+  if(mine.length){
+    const byPrice=new Map();
+    for(const o of mine){const p=o.price===null?"?":o.price.toFixed(2);byPrice.set(p,(byPrice.get(p)||0)+o.qty)}
+    if(byPrice.size===1&&[...byPrice.values()][0]===r.quantity)return [...byPrice.keys()][0];
+    return [...byPrice].map(([p,q])=>p+" x"+q).join(", ");
+  }
+  const g=protectedBy.get(key);
+  if(g)return g.p.toFixed(2)+" ("+g.via+")";
+  if(!orders)return "?";
+  return r.targetPrice!=null?r.targetPrice.toFixed(2)+" (tick)":"-";
+};
+(async()=>{
+let orders=null;
+if(detail.length){try{orders=await restingSells()}catch(e){console.log("\n(resting sells unavailable: the pending orders in Mongo could not be read: "+e.message+")")}}
+const protectedBy=readLog(orders||[]);
 console.log("\nUNREALIZED BY BROKER AND STRATEGY (open positions)");
 if(!detail.length){console.log("  none open");process.exit(0)}
 detail.sort((a,b)=>a.broker.localeCompare(b.broker)||a.strategy.localeCompare(b.strategy)||a.tsym.localeCompare(b.tsym));
 const hdr=["broker","strategy","contract","qty","bought","ltp","resting sell","unrealized"];
 const rows=detail.map(r=>{
-  const sell=sells.get(r.user+"|"+r.tsym)??sells.get(r.user.replace(/-(ANT|Breeze|Prism)$/,"")+"|"+r.tsym);
-  const rest=sell!=null?(typeof sell==="object"?sell.p.toFixed(2)+" ("+sell.via+")":sell.toFixed(2)):(r.targetPrice!=null?r.targetPrice.toFixed(2)+" (tick)":"-");
+  const rest=restText(r,orders,protectedBy);
   return [r.broker,r.strategy,r.tsym,String(r.quantity),r.price.toFixed(2),r.ltp==null?"?":r.ltp.toFixed(2)+(r.liveQuote?"":"*"),rest,f(r.unrealized)];
 });
 const w=hdr.map((h,i)=>Math.max(h.length,...rows.map(r=>r[i].length)));
@@ -376,4 +416,5 @@ console.log(line(hdr));
 for(const r of rows)console.log(line(r));
 console.log(line(["TOTAL","","","","","","",f(detail.reduce((a,r)=>a+r.unrealized,0))]));
 if(detail.some(r=>!r.liveQuote))console.log("  * no live quote, last known price");
+})();
 '

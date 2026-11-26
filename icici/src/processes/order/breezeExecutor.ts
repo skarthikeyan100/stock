@@ -970,7 +970,7 @@ export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: 
     });
     Log.log(`[order] Bare Breeze limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, price);
-    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Sell' });
+    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Sell', price });
     return { orderId, quantity }; // the quantity actually placed (the never-short guard may have clamped it)
 }
 

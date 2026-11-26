@@ -455,7 +455,8 @@ class OrderClient {
 
     // Broker-uniform query of this app's own pending-order trackers for a given tsym,
     // filtered to SELL orders only (see orderProtocol.ts's 'getPendingSells' comment).
-    async getPendingSells(userId: string, broker: string, tradingSymbol: string): Promise<{ quantity: number }[]> {
+    // `price` is the resting limit price (absent for an order tracked without one).
+    async getPendingSells(userId: string, broker: string, tradingSymbol: string): Promise<{ quantity: number; price?: number }[]> {
         return this.call('getPendingSells', userId, { broker, tradingSymbol });
     }
 
