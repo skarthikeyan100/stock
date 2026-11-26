@@ -362,6 +362,9 @@ Rules for the report:
 
 ## Updating this file (rules for every edit of trader.md)
 
+This file is `.claude/agents/trader.md` in `/home/karthikeyan/work/icici`. It is tracked although `.claude` is git-ignored, so stage it with
+`git add -u -- .claude/agents/trader.md`.
+
 The user has had to repeat these. Follow them every time, without being told.
 
 - **Concepts only.** Write the rule, the reason in one clause, and the steps. No dates, no times, no order ids, no P&L or other figures from the
