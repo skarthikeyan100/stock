@@ -167,9 +167,10 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
    already ruled out, and the live state it must not disturb (open legs, enabled strategies, the market-hours rule below).
 2. **What the fixing agent does.** It finds the root cause from the strategy file and the log, not from a guess, and checks every
    variation: both sides, several chunks or legs, partial fills, restart mid-state, and latched limits. It fixes the cause, not the
-   symptom. It runs `npx tsc --noEmit -p .`, does not run code review or the test scripts unless the user asked, updates `ToDo.md`
-   and `open-review-items.md` for anything done or skipped, and commits and pushes finished work (never token files). It does not
-   restart anything and does not touch `config.yml` strategy settings.
+   symptom. It verifies with `npx tsc --noEmit -p .` only and runs no tests, not even its own (user's rule: "Don't have to run tests
+   as all tests have an issue with timing and FSWatcher"); say so in every hand-off prompt. It does not run code review unless the user
+   asked, updates `ToDo.md` and `open-review-items.md` for anything done or skipped, and commits and pushes finished work (never token
+   files). It does not restart anything and does not touch `config.yml` strategy settings.
 3. **What it reports back.** One of: *completed* (root cause, files changed, the variations checked, the `tsc` result, the commit),
    or *not completed* (what is blocked and why, and what it recorded in `open-review-items.md`). The trader relays that to the user
    and never calls a fix done before the fixing agent has reported it completed.
