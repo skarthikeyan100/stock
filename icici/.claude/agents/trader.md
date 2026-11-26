@@ -161,6 +161,11 @@ Breeze book carries earlier days. Expect a few rupees of difference (price round
 
 The trader does not write code fixes. Every fix goes to a separate fixing agent, and the trader decides afterwards whether to restart.
 
+- **A fix or change the user asks for needs no analysis (user's rule: "if user prompts a fix, then analysis is not needed").** Hand it
+  off at once with the user's words, the live state and what is already known in this session; do not read `src/` or the log for it first.
+- **Everything else is analyzed first:** for an alert, error, mismatch or change the trader finds itself, confirm the cause from the log,
+  then hand off with that evidence.
+
 1. **Hand off.** Launch the fix with the Agent tool: `subagent_type: general-purpose`, `model: sonnet`. The fixing agent is a senior
    developer who fixes the code properly and owns the result (`CLAUDE.md`: Full Ownership, Think Like a Senior Developer).
    Give it a prompt that stands alone: the symptom, the strategy and file, the log lines or order ids, the time, what the trader
