@@ -25,6 +25,7 @@ export async function readPlatformSells(userId: string, broker: string, tsym: st
 export interface SeenSells {
     ids: Set<string> | null;   // order ids the strategy's fill handler already booked (state written by code that records them); null = a legacy state
     legacyQty: number;         // legacy state only: quantity the strategy already accounted for on this contract (closed legs in full, open legs their soldQty)
+    partQty?: Record<string, number>; // quantity booked from a seen order's fill event: what the order sold beyond it is still unaccounted. A seen id without an entry was booked in full
 }
 export interface GoneLeg { id: string; remaining: number }
 export interface Allocation {
@@ -34,9 +35,15 @@ export interface Allocation {
     perLeg: Map<string, number>; // quantity booked to each leg (legs in the given order, oldest first)
 }
 
-// The sells the strategy has not accounted for yet. null = a legacy state whose boundary falls inside one order (which part was seen is unknown).
+// The sells (or the parts of them) the strategy has not accounted for yet. null = a legacy state whose boundary falls inside one order (which part was seen is unknown).
 export function unseenSells(sells: PlatformSell[], seen: SeenSells): PlatformSell[] | null {
-    if (seen.ids) return sells.filter((s) => !seen.ids!.has(s.orderId));
+    if (seen.ids) {
+        return sells.flatMap((s) => {
+            if (!seen.ids!.has(s.orderId)) return [s];
+            const booked = seen.partQty?.[s.orderId];
+            return booked !== undefined && s.quantity > booked ? [{ ...s, quantity: s.quantity - booked }] : [];
+        });
+    }
     let skipped = 0;
     let i = 0;
     while (i < sells.length && skipped < seen.legacyQty) { skipped += sells[i].quantity; i++; }
@@ -45,7 +52,8 @@ export function unseenSells(sells: PlatformSell[], seen: SeenSells): PlatformSel
 
 /**
  * Which of the platform's sells cover the legs that are gone from the broker. Never guesses:
- *  - an order the strategy already saw (its id is in `seen.ids`) is skipped, so nothing is booked twice;
+ *  - an order the strategy already saw (its id is in `seen.ids`) is skipped, so nothing is booked twice; of an order it booked only in part
+ *    (`seen.partQty`) only the rest counts;
  *  - a legacy state (no ids recorded) skips the first `legacyQty` lots of the platform's sells and gives up when that boundary falls inside one order;
  *  - an order larger than what is still to cover is not split;
  *  - several legs on one contract are only covered when the sells cover ALL of them (which leg the lots left cannot be told otherwise).
@@ -88,6 +96,7 @@ export async function bookPlatformSoldLegs(ctx: {
     tag: string; userId: string; broker: string;
     legs: ReconcileLeg[]; gone: ReconcileLeg[];
     seenIds: Set<string> | null;                      // null = legacy state (see SeenSells)
+    partQty?: Record<string, number>;                 // see SeenSells.partQty
     markSeen: (orderIds: string[]) => void;
     book: (leg: any, qty: number, price: number) => void;
 }): Promise<void> {
@@ -98,7 +107,7 @@ export async function bookPlatformSoldLegs(ctx: {
         const sells = await readPlatformSells(ctx.userId, ctx.broker, tsym);
         if (!sells || sells.length === 0) continue;
         const legacyQty = ctx.legs.filter((l) => l.tsym === tsym).reduce((s, l) => s + (l.status === 'closed' ? l.qty : l.soldQty), 0);
-        const alloc = allocatePlatformSells(sells, { ids: ctx.seenIds, legacyQty }, group.map((l) => ({ id: l.id, remaining: remaining(l) })));
+        const alloc = allocatePlatformSells(sells, { ids: ctx.seenIds, legacyQty, partQty: ctx.partQty }, group.map((l) => ({ id: l.id, remaining: remaining(l) })));
         if (!alloc) {
             Log.log(`[${ctx.tag}] reconcile: ${tsym}: the platform's own sells (${sells.map((s) => `${s.quantity}@${s.price.toFixed(2)}`).join(', ')}) do not cover the leg(s) unambiguously (already seen, several legs, or not enough lots) - handled as a close outside the platform`);
             continue;

@@ -27,7 +27,7 @@ import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
 import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution } from './unconfirmedBuy';
 import { bookPlatformSoldLegs } from './platformSells';
-import { reportCarriedLegs } from './dayRollover';
+import { carryOver, reportCarried, CarriedBatch, CarriedInput } from './dayRollover';
 import { lostFollowUp } from './chainFollowUp';
 import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
@@ -146,7 +146,9 @@ interface PairContract { tradingSymbol: string; token: string; exchange: 'NFO' |
 interface State { day: string; legs: Record<string, SimpleLeg>; pair?: { CE?: PairContract; PE?: PairContract }; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean;
     // Broker order ids of the sells this strategy's fill handler (or a reconcile that attributed a platform sell) already booked. sellIdsTracked is set only on a state
     // created by code that records them: a state without it is legacy and its reconcile falls back to quantities (see platformSells.ts).
-    sellIdsTracked?: boolean; seenSells?: string[] }
+    sellIdsTracked?: boolean; seenSells?: string[];
+    sellQtys?: Record<string, number>; // quantity booked from each order's fill event (see platformSells.ts SeenSells.partQty)
+    carried?: CarriedBatch[] }         // what earlier days left unresolved (see dayRollover.ts)
 
 const opposite = (r: Right): Right => (r === 'CE' ? 'PE' : 'CE');
 
@@ -254,25 +256,40 @@ export default class ExperimentalScaledStrategy extends Strategy {
             else if (raw?.legs) earlier = raw;
         } catch { /* no file yet */ }
         this.state = fresh;
-        if (earlier) this.rolloverCheck = this.reportRollover(earlier);
+        if (earlier) {
+            const carried = carryOver(earlier, this.carriedFrom(earlier));
+            if (carried.length > 0) this.state.carried = carried;
+        }
+        this.rolloverCheck = this.checkCarried();
         for (const leg of this.openLegs()) this.watch(leg);
         for (const c of [this.state.pair?.CE, this.state.pair?.PE]) if (c) registerTrade(c.token, this, undefined, c.exchange);
     }
 
     private rolloverCheck: Promise<void> = Promise.resolve();
 
-    // Reads and logs only (see dayRollover.ts).
-    private reportRollover(old: State): Promise<void> {
+    // What the earlier day's state leaves unfinished: its open legs and its unconfirmed buys (pendingHedge, on an open or a closed leg). dayRollover.ts
+    // reports each once and keeps its record in the new day's state. Nothing is settled at the broker here (that would cancel orders).
+    private carriedFrom(old: State): CarriedInput[] {
         const configured = this.brokerOrKite();
-        return reportCarriedLegs({
-            tag: 'ExperimentalScaledStrategy', userId: this.userId, fromDay: old.day,
-            seenIds: old.sellIdsTracked ? new Set(old.seenSells ?? []) : null,
-            legs: Object.values(old.legs).map((l) => ({
-                broker: l.broker ?? configured, tsym: l.tsym, open: l.status === 'open',
-                remaining: l.qty - l.soldQty, accounted: l.status === 'closed' ? l.qty : l.soldQty,
+        return Object.values(old.legs).flatMap((l) => {
+            const broker = l.broker ?? configured;
+            const leg: CarriedInput = {
+                broker, tsym: l.tsym, open: l.status === 'open',
+                remaining: l.qty - l.soldQty, accounted: l.status === 'closed' ? l.qty : l.soldQty, record: l,
                 alert: `${l.tsym} from ${old.day} was still open when the day rolled over - check the broker position by hand`,
-            })),
+            };
+            const p = l.pendingHedge;
+            if (!p) return [leg];
+            return [leg, {
+                kind: 'pendingBuy' as const, broker, tsym: p.tsym, open: true, remaining: p.qty, accounted: 0, record: { ...p, legId: l.id },
+                alert: `an unconfirmed ${p.addToLegId ? 'add' : 'hedge'} buy of ${p.qty} ${p.tsym} (recorded on leg ${l.id} ${l.tsym}) was never settled before the day rolled over from ${old.day} - whether it filled is not known: check the broker's order book, trade book and position by hand`,
+            }];
         });
+    }
+
+    private checkCarried(): Promise<void> {
+        if (!this.state.carried?.length) return Promise.resolve();
+        return reportCarried({ tag: 'ExperimentalScaledStrategy', userId: this.userId, batches: this.state.carried, persist: () => this.save() });
     }
 
     private save(): void {
@@ -371,7 +388,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
             return;
         }
         this.blocked = false;
-        await this.rolloverCheck; // before the first save below replaces an earlier day's file, so a restart during the check repeats it
+        await this.rolloverCheck; // the earlier days' leftovers are reported before today's reconcile
         const byKey = new Map<string, Trade>();
         for (const t of openTrades) byKey.set(String(t.token), t);
         // A leg the broker no longer holds that the platform's OWN order sold (a lock-profits sell that filled while this strategy was disabled and so
@@ -380,7 +397,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
             tag: this.name, userId: this.userId, broker: this.brokerOrKite(),
             legs: Object.values(this.state.legs),
             gone: this.openLegs().filter((leg) => { const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym); return !t || !(Number(t.quantity) > 0); }),
-            seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null,
+            seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null, partQty: this.state.sellQtys,
             markSeen: (ids) => this.noteSeenSells(ids),
             book: (leg, qty, price) => this.bookPlatformSell(leg, qty, price),
         });
@@ -623,7 +640,10 @@ export default class ExperimentalScaledStrategy extends Strategy {
     private noteSeenSells(ids: string[]): void {
         if (ids.length === 0) return;
         const seen = this.state.seenSells ?? (this.state.seenSells = []);
-        for (const id of ids) if (!seen.includes(id)) seen.push(id);
+        for (const id of ids) {
+            if (!seen.includes(id)) seen.push(id);
+            delete this.state.sellQtys?.[id]; // accounted in full unless a fill event records its quantity right after
+        }
     }
 
     // A sell of `qty` @ price that the platform's own order made while this strategy was not told (reconcile only): the same P&L bookkeeping as updateTrade
@@ -675,7 +695,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
             await bookPlatformSoldLegs({
                 tag: this.name, userId: this.userId, broker: this.brokerOrKite(),
                 legs: Object.values(this.state.legs), gone: [leg],
-                seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null,
+                seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null, partQty: this.state.sellQtys,
                 markSeen: (ids) => this.noteSeenSells(ids),
                 book: (l, qty, price) => this.bookPlatformSell(l, qty, price),
             });
@@ -1019,7 +1039,10 @@ export default class ExperimentalScaledStrategy extends Strategy {
         if (!leg) return undefined;
         const qty = Number(trade.quantity);
         if (!(qty > 0)) return undefined;
-        this.noteSeenSells(orderId ? [orderId] : []);
+        if (orderId) {
+            this.noteSeenSells([orderId]);
+            this.state.sellQtys = { ...(this.state.sellQtys ?? {}), [orderId]: qty }; // if the order sold more than this event, the rest stays unaccounted
+        }
         // The maxProfit total: this fill's P&L from the leg's reference (a leg that was open when counting started and has had no tick yet: 0).
         const fillPrice = Number(trade.price);
         const ref = leg.pnlRefPending ? fillPrice : (leg.pnlRef ?? leg.entry);

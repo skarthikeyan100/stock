@@ -1,5 +1,5 @@
 import { bookPlatformSoldLegs } from './platformSells';
-import { reportCarriedLegs } from './dayRollover';
+import { carryOver, reportCarried, CarriedBatch, CarriedInput } from './dayRollover';
 import * as fs from 'fs';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import * as path from 'path';
@@ -92,6 +92,8 @@ export interface State {
     // created by code that records them: a state without it is legacy and its reconcile falls back to quantities (see platformSells.ts).
     sellIdsTracked?: boolean;
     seenSells?: string[];
+    sellQtys?: Record<string, number>; // quantity booked from each order's fill events (see platformSells.ts SeenSells.partQty)
+    carried?: CarriedBatch[]; // what earlier days left unresolved (see dayRollover.ts)
     // RecommendationStrategy only: the recommendation's identity apart from target/stop (contract, entry, offset, amount). Lets a later edit of
     // target/stop on the SAME open trade be told apart from a new recommendation (see adjustOpenTrade).
     baseKey?: string;
@@ -188,25 +190,31 @@ export abstract class LimitEntryStrategy extends Strategy {
         }
         this.state = fresh;
         for (const leg of Object.values(this.state.legs)) this.rewatch(leg);
-        if (earlier) this.rolloverCheck = this.reportRollover(earlier);
+        if (earlier) {
+            const carried = carryOver(earlier, this.carriedFrom(earlier));
+            if (carried.length > 0) this.state.carried = carried;
+        }
+        this.rolloverCheck = this.checkCarried();
     }
 
     private rolloverCheck: Promise<void> = Promise.resolve();
 
-    // A previous day's leg that never closed is not managed any more (strategies hold no state across days): say so, unless the platform's own
-    // sells closed it or it is a paper leg. Reads and logs only (see dayRollover.ts). A resting / placing entry may have filled without the strategy
-    // being told, so only sells of the whole ordered quantity explain it; a filled leg needs what it is recorded to still hold.
-    private reportRollover(old: State): Promise<void> {
-        return reportCarriedLegs({
-            tag: this.logTag, userId: this.userId, fromDay: old.day,
-            seenIds: old.sellIdsTracked ? new Set(old.seenSells ?? []) : null,
-            legs: Object.values(old.legs).map((l) => ({
-                broker: l.broker, tsym: l.tsym, open: l.status === 'filled' || l.status === 'resting' || l.status === 'placing',
-                remaining: (l.status === 'filled' ? l.filledQty : l.qty) - l.soldQty,
-                accounted: l.status === 'closed' ? l.filledQty : l.soldQty,
-                alert: `${l.broker} ${l.tsym} from ${old.day} was still ${l.status} (filled ${l.filledQty}, sold ${l.soldQty}) when the day rolled over - check the broker position by hand`,
-            })),
-        });
+    // A previous day's leg that never closed is not managed any more (strategies hold no state across days): say so, once, unless the platform's own
+    // sells closed it or it is a paper leg; its record stays in today's state (see dayRollover.ts). A resting / placing entry may have filled without
+    // the strategy being told, so only sells of the whole ordered quantity explain it; a filled leg needs what it is recorded to still hold.
+    private carriedFrom(old: State): CarriedInput[] {
+        return Object.values(old.legs).map((l) => ({
+            broker: l.broker, tsym: l.tsym, open: l.status === 'filled' || l.status === 'resting' || l.status === 'placing',
+            remaining: (l.status === 'filled' ? l.filledQty : l.qty) - l.soldQty,
+            accounted: l.status === 'closed' ? l.filledQty : l.soldQty,
+            record: l,
+            alert: `${l.broker} ${l.tsym} from ${old.day} was still ${l.status} (filled ${l.filledQty}, sold ${l.soldQty}) when the day rolled over - check the broker position by hand`,
+        }));
+    }
+
+    private checkCarried(): Promise<void> {
+        if (!this.state.carried?.length) return Promise.resolve();
+        return reportCarried({ tag: this.logTag, userId: this.userId, batches: this.state.carried, persist: () => { this.save(); } });
     }
 
     // Returns false when the state could not be written. Callers that are about to place an order must then not place it.
@@ -742,7 +750,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             this.save();
             await this.protectFilled(leg);
         } else if (trade.action === 'Sell') {
-            this.noteSeenSells(trade.brokerOrderId ? [String(trade.brokerOrderId)] : []);
+            if (trade.brokerOrderId) this.noteSellFill(String(trade.brokerOrderId), qty);
             leg.soldQty += qty;
             leg.soldValue += qty * price;
             if (leg.soldQty >= leg.filledQty) {
@@ -780,7 +788,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     // Adopts positions the order process knows about (POST /reconcile): a fill missed while this process was down.
     async reconcile(): Promise<void> {
         this.ensureLoaded();
-        await this.rolloverCheck; // before anything below saves over an earlier day's file, so a restart during the check repeats it
+        await this.rolloverCheck; // the earlier days' leftovers are reported before today's reconcile
         let open: any[] = [];
         try { open = await OrderClient.getInstance().getOpenTrades(this.userId); } catch (e) { Log.log(`[${this.logTag}] reconcile: could not read open trades:`, e); throw e; } // fail the reconcile: returning would mark the strategy loaded with nothing reconciled
         let closedAny = false;
@@ -875,7 +883,9 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     reset(): void {
         super.reset();
-        this.state = { day: localDayKey(), keys: [], legs: {}, sellIdsTracked: true, seenSells: [] };
+        this.ensureLoaded();
+        const carried = this.state.carried; // a reset starts today's cycle again; it does not erase what earlier days left unresolved
+        this.state = { day: localDayKey(), keys: [], legs: {}, sellIdsTracked: true, seenSells: [], ...(carried ? { carried } : {}) };
         this.loaded = true;
         this.save();
     }
@@ -901,7 +911,17 @@ export abstract class LimitEntryStrategy extends Strategy {
     private noteSeenSells(ids: string[]): void {
         if (ids.length === 0) return;
         const seen = this.state.seenSells ?? (this.state.seenSells = []);
-        for (const id of ids) if (!seen.includes(id)) seen.push(id);
+        for (const id of ids) {
+            if (!seen.includes(id)) seen.push(id);
+            delete this.state.sellQtys?.[id]; // accounted in full unless a fill event records its quantity right after
+        }
+    }
+
+    // A sell fill event: its order is seen, for the quantity the events delivered (what the order sold beyond that stays unaccounted).
+    private noteSellFill(orderId: string, qty: number): void {
+        const before = this.state.sellQtys?.[orderId] ?? 0;
+        this.noteSeenSells([orderId]);
+        this.state.sellQtys = { ...(this.state.sellQtys ?? {}), [orderId]: before + qty };
     }
 
     // reconcile(): books, as normal closes, the lots of filled legs that the order side no longer holds and the platform's own sells explain. Same P&L
@@ -918,7 +938,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             await bookPlatformSoldLegs({
                 tag: this.logTag, userId: this.userId, broker,
                 legs: mine.map(view), gone,
-                seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null,
+                seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null, partQty: this.state.sellQtys,
                 markSeen: (ids) => this.noteSeenSells(ids),
                 book: (v: any, qty: number, price: number) => {
                     const leg: Leg = v.ref;
