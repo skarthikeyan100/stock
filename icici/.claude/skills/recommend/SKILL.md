@@ -42,11 +42,12 @@ The target block is `type: RecommendationStrategy` with `userId: Recommendation-
 
 6. **Check the result.** Re-read the block and confirm the values. Note the time: a recommendation given after `settings.eodCloseTime` or before `startTime` (09:20) is not placed until the next window. The strategy hot-reloads config.yml, so a running `npm run processes` picks it up with no restart.
 
-7. **Report** in one short message: the contract, entry, target and stop, the order price (`entry - entryOffset`), the index, and that the block is enabled. The block is set to `enabled: false` automatically once the trade is finished (bought and sold, or the entry cancelled with nothing filled).
+7. **Report** in one short message: the contract, entry, target and stop, the order price (`entry - entryOffset`), the index, and that the block is enabled. The block is set to `enabled: false` automatically once the trade is finished (bought and sold, or the entry cancelled with nothing filled). An unfilled entry is not cancelled after 5 minutes: it stays pending (no target/stop on it) until it fills or the end of day, and the strategy logs an ALERT.
 
 ## Notes
 
 - `targetPrice` and `stopLoss` in the block are the analyst's levels at the recommended entry. The strategy treats them as distances and places the protection at fill + (target - entry) / fill - (entry - stop), per broker, over partial fills (weighted average) and across restarts.
 - Changing the values of a block is a new recommendation, and it is placed once more. The same recommendation is never placed twice on a day, even across restarts.
+- Pending entry: `RecommendationStrategy` ignores `entryTimeoutMinutes`. An entry order still open 5 minutes after placement logs `ALERT: entry PENDING ...` (once per order; again only when the quantity filled at the broker grows). Target/stop are placed only on booked fills, and a fill is booked when its order completes or is cancelled, so a part filled while the order stays open has no target/stop; cancelling the rest at the broker books and protects it. While it is pending the trade is in progress (a new recommendation is refused), and disabling the block does not cancel the order (a fill while disabled gets no target/stop).
 - A recommendation sent while a trade is in progress is refused by this skill. If one reaches the strategy another way (a hand edit), the strategy drops it and never picks it up later.
 - Do not run `npm run test:*` for this change unless the user asks.

@@ -30,7 +30,7 @@ export type ChunkedBuyIndexResult = ChunkedFillResult & {
 // every request NOT on this read-only list is refused here, in one place, instead of trusting each strategy to remember. Default-deny: a new request
 // type is blocked inside a reconcile until someone decides it is a read.
 const READ_ONLY_REQUESTS: ReadonlySet<OrderRequestType> = new Set<OrderRequestType>([
-    'openTrades', 'getPendingSells', 'getLiveQuantity', 'contractHolders', 'stats', 'platformSells', 'canPlaceOrder', 'brokerSessions', 'getToken',
+    'openTrades', 'getPendingSells', 'getPendingBuys', 'getLiveQuantity', 'contractHolders', 'stats', 'platformSells', 'canPlaceOrder', 'brokerSessions', 'getToken',
     'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp', 'getOrderPrice', 'paperBook',
     // Not orders: they restore a runtime cap / setting that a latched strategy re-applies when it reloads.
     'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits', 'restoreFromMongo',
@@ -458,6 +458,11 @@ class OrderClient {
     // `price` is the resting limit price (absent for an order tracked without one).
     async getPendingSells(userId: string, broker: string, tradingSymbol: string): Promise<{ quantity: number; price?: number }[]> {
         return this.call('getPendingSells', userId, { broker, tradingSymbol });
+    }
+
+    // The resting limit BUYS of a tsym in this app's pending-order trackers. `seenFilled`: filled so far as the last poll saw it (not booked yet).
+    async getPendingBuys(userId: string, broker: string, tradingSymbol: string): Promise<{ orderId: string; quantity: number; seenFilled?: number }[]> {
+        return this.call('getPendingBuys', userId, { broker, tradingSymbol });
     }
 
     // Limit-sells every open long on `broker` (all brokers when omitted) at its current price to lock the open P&L; see orderProcess.ts's lockProfits.

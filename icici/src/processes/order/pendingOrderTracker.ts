@@ -24,6 +24,9 @@ export interface PendingOrder {
     /** An entry buy put on the poller because the entry call could not establish its outcome: its fill is booked and an explicit cancel finds it,
      *  but a cancel / reject seen by the poll is not told to the cancelled listeners (no strategy placed a resting order). Persisted. */
     quiet?: boolean;
+    /** Filled quantity the last poll saw while the order was still open (not booked until it completes or is cancelled). Absent until a poll
+     *  reports one (a broker whose open-order status carries none never sets it). In memory only. */
+    seenFilled?: number;
 }
 
 export interface OrderStatus {
@@ -328,5 +331,6 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             }
         }
         // else: still pending, leave in map for the next poll
+        else if (filledQuantity !== undefined) order.seenFilled = Number(filledQuantity) || 0;
     }
 }

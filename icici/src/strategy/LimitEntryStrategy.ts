@@ -76,6 +76,8 @@ export interface Leg {
     targetSellQty?: number; // exit 'target': quantity the target sell covers; set BEFORE the order goes out, so a later fill is topped up and a retry never doubles it
     targetSellPrice?: number; // exit 'target': the limit price of that sell
     targetRetryAt?: number; // exit 'target': earliest time a refused (definitely not placed) target sell is tried again
+    // RecommendationStrategy: per entry order id, the last still-pending ALERT (epoch ms, and the quantity filled then as far as known). Saved, so a restart does not repeat it.
+    pendingAlerts?: Record<string, { at: number; filled: number }>;
     halfTrail?: HalfTrailState; // half sold at the target by a resting limit, the rest trailed (see halfTrail.ts); set by placeHalfTrailExit
     checkpoint?: CheckpointState; // half sold at market on a 5-minute option candle close at the checkpoint, stop of the rest moved (see checkpointTrail.ts); set by placeCheckpointExit
     closing?: boolean; // an EOD/stop close is in flight or done - never started twice
@@ -135,6 +137,13 @@ export abstract class LimitEntryStrategy extends Strategy {
     // Called once the cycle is over: no leg holds or rests and no entry is still open (sold out, cancelled with nothing filled, or every
     // broker's entry refused). Nothing by default; RecommendationStrategy disables its block in config.yml here.
     protected async onCycleEnded(): Promise<void> {}
+    // Minutes an entry may stay open before it is cancelled: settings.entryTimeoutMinutes is the global, a block's own entryTimeoutMinutes
+    // overrides it (same lookup as target / stopLoss). 0 / unset = no timeout. RecommendationStrategy returns 0 (it logs instead, below).
+    protected entryTimeoutMinutes(): number {
+        return Number(this.setting('entryTimeoutMinutes'));
+    }
+    // Called once per housekeeping pass (before the end of day only) for every leg whose entry is still open at the broker. Nothing by default.
+    protected async onEntryPending(_leg: Leg, _now: number): Promise<void> {}
     // The last startCycle was refused by a broker's price band (definite, nothing placed). The key stays used for the day (no blind retry on
     // every tick), but a subclass that disables its block when a cycle ends should not: fixing the prices makes a new key.
     protected priceBandRefusal = false;
@@ -1147,8 +1156,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     private async housekeeping(): Promise<void> {
         const cfg = this.cfg() as any;
         const eod = isPastEodClose();
-        // settings.entryTimeoutMinutes is the global; a block's own entryTimeoutMinutes overrides it (same lookup as target / stopLoss). 0 / unset = no timeout.
-        const timeoutMinutes = Number(this.setting('entryTimeoutMinutes'));
+        const timeoutMinutes = this.entryTimeoutMinutes();
         const timeoutMs = timeoutMinutes > 0 ? timeoutMinutes * 60_000 : 0;
         const now = Date.now();
         await this.endIfIdle();
@@ -1178,6 +1186,8 @@ export abstract class LimitEntryStrategy extends Strategy {
                 else if (leg.exit && (leg.exitQty ?? 0) < leg.filledQty) await this.topUp(leg);
             }
             if (leg.status === 'filled' && leg.filledQty >= leg.qty && eod && !leg.closing) await this.closeLeg(leg, 'end of day');
+            // Last, so it never delays an exit. A leg whose sold part closed it can still have entry quantity resting (entryOpen).
+            if (!eod && leg.status !== 'placing' && this.entryOpen(leg)) await this.onEntryPending(leg, now);
         }
     }
 }

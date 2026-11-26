@@ -65,6 +65,9 @@ export type OrderRequestType =
     // resting from before the incident, oversubscribing the sell quantity and triggering a
     // broker margin-shortfall rejection, not a broker netting bug) before placing a duplicate.
     | 'getPendingSells'
+    // Read-only: this user's resting limit BUYS of one contract on one broker, as the pending-order tracker holds them, with the filled quantity
+    // the last poll saw while still open (`seenFilled`). payload: { broker, tradingSymbol }.
+    | 'getPendingBuys'
     // Live net position of one contract on one broker, read inside `order` (where the broker sessions live). Strategies used to import
     // the executors directly and query through a second, unmanaged session in their own process.
     | 'getLiveQuantity'

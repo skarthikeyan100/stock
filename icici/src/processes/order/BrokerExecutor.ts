@@ -410,7 +410,7 @@ export interface BrokerExecutor {
     getContractByPriceRange(underlyingLtp: number, optionType: 'CE' | 'PE', index: OptionIndex, minPremium: number, excludeStrikes: Set<number>, skipNearestExpiryDay?: boolean): Promise<any>;
 
     // This broker's resting limit orders on one contract (the pending-order tracker's view).
-    findPendingOrders(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number; exchange: OptionExchange }[];
+    findPendingOrders(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number; exchange: OptionExchange; seenFilled?: number }[];
 
     buy(request: BuyRequest): Promise<Trade>;
 

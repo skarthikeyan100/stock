@@ -1026,6 +1026,11 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
+            case 'getPendingBuys': {
+                const result = getExecutorByBroker(req.payload.broker, 'getPendingBuys').findPendingOrders(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Buy');
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
             case 'antPlaceCoverOrder': {
                 return await placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.placeCoverOrderForGapScreener(

@@ -13,6 +13,8 @@ import { normalizeBrokerName } from '../util/brokerName';
 import { RecState, RecWatch, atmStrike, backAtEntry, hitTarget, nextAction, oppositeRight } from './recommendationCycle';
 
 const DEFAULT_ENTRY_TOLERANCE = 10; // option-price points
+const PENDING_ALERT_MS = 5 * 60_000; // an entry order still open this long after placement is logged as an ALERT
+const PENDING_CHECK_MS = 15_000; // how often an overdue order is looked at again (the pending-order poller's own period)
 
 // Trades one analyst recommendation given in config.yml: a contract ("22750 CE"), an entry price, a target and a stop loss.
 // Places a LIMIT buy at (entryPrice - entryOffset) on every configured broker, sized from maxInvestment (the amount PER
@@ -20,7 +22,12 @@ const DEFAULT_ENTRY_TOLERANCE = 10; // option-price points
 //   kite  - one two-leg GTT (OCO) at the broker; if that fails, the in-app exitMonitor.
 //   ant   - the in-app exitMonitor (a bracket/cover order must BE the entry order, it cannot be attached to a filled one).
 //   other - a resting limit sell at the target plus a tick-driven market stop in this strategy.
-// An unfilled entry is cancelled at the end of day (and after entryTimeoutMinutes when set); a held position is closed at settings.eodCloseTime (global, not a key of this block).
+// An unfilled (or partly filled) entry is NOT cancelled on a timer: entryTimeoutMinutes (settings or block) is ignored here. It is cancelled at
+// the end of day (and by the global max-profit latch, as for every strategy); a held position is closed at settings.eodCloseTime (global, not a key of this block).
+// An entry order still open 5 minutes after placement is logged as an ALERT (broker, contract, filled/ordered, price, order id), once per order,
+// and again only when the quantity filled at the broker has grown (at once for the first filled quantity, then at most every 5 minutes).
+// Target and stop go on booked fills only, and the order process books an order's fill when the order COMPLETES or is CANCELLED: a part filled
+// while the order stays open has no target/stop until then (cancelling the rest at the broker books and protects it).
 // One recommendation per config block (add another block, with its own userId, for another one). Changing the contract/prices of a
 // block is a new recommendation and is placed once more; the same recommendation is never placed twice on a day, even across restarts.
 // A recommendation arriving while a trade is still open (order or position) is dropped, not held for later. When the trade is finished
@@ -46,12 +53,52 @@ const DEFAULT_ENTRY_TOLERANCE = 10; // option-price points
 //                                   strategy. Default false. Both act only after a target (a stop, end of day or unfilled entry ends the strategy as before).
 //                                   Every re-entry checks the global max-profit latch per broker; end of day ends a pending reverse. Brokers whose trade did not
 //                                   reach its target drop out; the next step waits until every broker's current trade is over.
-//   startTime: '09:20'            - not placed before this; entryTimeoutMinutes: optional (the EOD close is settings.eodCloseTime)
+//   startTime: '09:20'            - not placed before this (the EOD close is settings.eodCloseTime)
 export default class RecommendationStrategy extends LimitEntryStrategy {
     protected readonly logTag = `Recommendation:${this.userId}`;
     protected readonly strategyType = 'RecommendationStrategy';
     private invalidLogged = '';
+    private pendingCheckedAt = new WeakMap<Leg, number>();
 
+    // No timeout cancel: a pending entry rests until it fills, the end of day or the max-profit latch. onEntryPending reports it.
+    protected entryTimeoutMinutes(): number {
+        return 0;
+    }
+
+    // The still-pending ALERT (see the header). Only orders the order process still tracks as resting are reported, so one that was filled,
+    // cancelled or rejected but not yet told here is not. When the tracked orders cannot be read the ALERT goes out anyway, quantity unknown.
+    // Each line stays within what the alert monitor shows (monitor-limitentry-events.sh cuts it at 170 characters, 28 of them its own prefix).
+    protected async onEntryPending(leg: Leg, now: number): Promise<void> {
+        if (now - leg.placedAt < PENDING_ALERT_MS || now - (this.pendingCheckedAt.get(leg) ?? 0) < PENDING_CHECK_MS) return;
+        this.pendingCheckedAt.set(leg, now);
+        let resting: { orderId: string; seenFilled?: number }[] | undefined;
+        try {
+            resting = await OrderClient.getInstance().getPendingBuys(this.userId, leg.broker, leg.tsym);
+        } catch (e: any) {
+            if (!leg.pendingAlerts) Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: could not read the pending entry orders: ${e?.message ?? e}`);
+        }
+        // Judged after the await: a fill or cancel may have landed meanwhile.
+        if (!this.enabled || !this.entryOpen(leg) || !this.legs().includes(leg)) return;
+        const orders = leg.chunks?.length ? leg.chunks : leg.orderId ? [{ id: String(leg.orderId), qty: leg.qty, filled: leg.filledQty, cancelled: false }] : [];
+        for (const order of orders) {
+            if (order.cancelled || order.filled >= order.qty) continue;
+            const tracked = resting?.find((o) => String(o.orderId) === order.id);
+            if (resting && !tracked) continue;
+            const known = leg.broker === 'paper' || tracked?.seenFilled !== undefined; // a paper order only ever fills whole
+            const filled = Math.max(order.filled, tracked?.seenFilled ?? 0);
+            const last = leg.pendingAlerts?.[order.id];
+            if (last && !(filled > last.filled && (last.filled === 0 || now - last.at >= PENDING_ALERT_MS))) continue;
+            leg.pendingAlerts = { ...(leg.pendingAlerts ?? {}), [order.id]: { at: now, filled } };
+            this.save();
+            const shown = known || filled > 0 ? String(filled) : '?';
+            Log.log(`[${this.logTag}] ALERT: entry PENDING ${Math.floor((now - leg.placedAt) / 60_000)} min: ${leg.broker} ${leg.tsym} filled ${shown}/${order.qty} @ ${leg.price} order ${order.id} - no target/stop on unfilled ${order.qty - filled}`);
+            if (filled > order.filled) {
+                Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: ${filled - order.filled} filled at broker, NOT booked, NO target/stop till order ends - cancel the rest to protect it`);
+            } else if (!known) {
+                Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: filled qty not known here, check the broker - a part filled has NO target/stop till order ends`);
+            }
+        }
+    }
 
     // Identifies one recommendation (its contract, prices, budget and offset). Persisted per day, so the same one is never placed twice.
     static keyOf(cfg: any): string {
