@@ -4,11 +4,13 @@
 // semantics, hedge waiting, one open leg per contract / per side, unconfirmed-buy settling, EOD close, reconcile places no order).
 //
 // THE SINGLE DIFFERENCE vs ScaledHedgedStrategy
-//   RULE 1 (quantity of a same-direction re-buy after a target fill, hedge(leg, reason, same = true)): `initialQuantity` ONLY when no leg of the OPPOSITE
-//      right is open. When an opposite-right leg is open its scale formula is used (initialQuantity + (opposite.entry - opposite.lastLtp) / priceDiff *
-//      initialQuantity, whole lots, never below initialQuantity, capped at the freeze quantity) fed THAT open leg (one open leg per side, so it is
-//      unambiguous). maxInvestment (capQuantity) still cuts it. Adverse-move / loss hedges (opposite direction) keep the ScaledHedgedStrategy formula on the
-//      parent leg; rule 1 never applies to them.
+//   RULE 1 (quantity of a same-direction re-buy after a target fill, hedge(leg, reason, same = true)): `initialQuantity` when no leg of the OPPOSITE
+//      right is open. When an opposite-right leg is open (one open leg per side, so it is unambiguous):
+//      (opposite.entry - opposite.lastLtp) / priceDiff * initialQuantity - NO "initialQuantity +" term (user's rule 2026-11-26) - whole lots, never below
+//      initialQuantity (a drop under priceDiff, or an opposite leg at / above its entry, buys initialQuantity), capped at the freeze quantity.
+//      initialQuantity 130, priceDiff 10, PE bought at 200 now 180: 20/10 x 130 = 260. maxInvestment (capQuantity) still cuts it. Adverse-move / loss
+//      hedges (opposite direction) keep the ScaledHedgedStrategy formula (initialQuantity + drop / priceDiff * initialQuantity) on the parent leg; rule 1
+//      never applies to them.
 //   NO STOP and NO ADD MODE: the class sells at entry + priceDiff through the resting sell and re-buys exactly like ScaledHedgedStrategy; `slDistance` has no
 //      effect here.
 //
@@ -44,7 +46,7 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   A. The root buys `initialQuantity` (e.g. 65), never the whole maxInvestment (onePositionPerSide no longer sizes the root).
 //   B. A hedge buys initialQuantity + (leg entry - leg price now) / priceDiff * initialQuantity, floored to whole lots (never below
 //      initialQuantity): a CE that fell by priceDiff gets a PE of 2 x initialQuantity (65 + 10/10 x 65 = 130). A hedge opened by a target
-//      fill (the leg is at or above its entry) buys initialQuantity.
+//      fill (the leg is at or above its entry) buys initialQuantity. In this class a same-direction re-buy is sized by RULE 1 above.
 //   C. NO double-up. Instead, when a leg falls by priceDiff the OPPOSITE option is bought again (a hedge leg that falls buys the CE again).
 //   D. Only ONE CE contract and ONE PE contract are used per cycle: the root's contract and the contract of the first hedge (ATM at that time).
 //      Every later buy of a right uses that same contract: if its leg is open NOTHING is bought (no add; one leg per contract per cycle, the
@@ -859,18 +861,29 @@ export default class ExperimentalScaledStrategy extends Strategy {
     // Scaled (B): hedge quantity = initialQuantity + (entry - price now) / priceDiff * initialQuantity, in whole lots, at least initialQuantity.
     private hedgeQuantity(leg: SimpleLeg): number {
         const base = Number(this.cfg()?.initialQuantity);
-        const lot = INDEX_LOT_SIZE.NIFTY;
-        const drop = Math.max(0, leg.entry - (Number(leg.lastLtp) > 0 ? Number(leg.lastLtp) : leg.entry));
-        const raw = base + (drop / this.priceDiff()) * base;
-        const q = Math.floor(raw / lot + 1e-9) * lot;
-        return Math.min(Math.max(q, base), Math.floor(NIFTY_FREEZE_QUANTITY / lot) * lot);
+        return this.boundedQuantity(base + this.dropSteps(leg) * base);
     }
 
-    // Rule 1: the quantity of a same-direction re-buy of `right` after a target fill: initialQuantity when no leg of the opposite right is open, else the
-    // scale formula fed that open opposite leg (one open leg per side, so there is at most one).
+    // Rule 1: the quantity of a same-direction re-buy of `right` after a target fill: initialQuantity when no leg of the opposite right is open, else
+    // (that open leg's drop / priceDiff) * initialQuantity, without the "initialQuantity +" of a hedge (one open leg per side, so there is at most one).
     private rebuyQuantity(right: Right): number {
+        const base = Number(this.cfg()?.initialQuantity);
         const opp = this.openLegs().find((l) => l.right === opposite(right));
-        return opp ? this.hedgeQuantity(opp) : Number(this.cfg()?.initialQuantity);
+        return opp ? this.boundedQuantity(this.dropSteps(opp) * base) : base;
+    }
+
+    // How many priceDiff the leg is below its entry (fractional; 0 at or above the entry, or with no price yet).
+    private dropSteps(leg: SimpleLeg): number {
+        const drop = Math.max(0, leg.entry - (Number(leg.lastLtp) > 0 ? Number(leg.lastLtp) : leg.entry));
+        return drop / this.priceDiff();
+    }
+
+    // Whole lots (floored), never below initialQuantity, never above one exchange order (freeze quantity).
+    private boundedQuantity(raw: number): number {
+        const base = Number(this.cfg()?.initialQuantity);
+        const lot = INDEX_LOT_SIZE.NIFTY;
+        const q = Math.floor(raw / lot + 1e-9) * lot;
+        return Math.min(Math.max(q, base), Math.floor(NIFTY_FREEZE_QUANTITY / lot) * lot);
     }
 
     // `same`: follow the leg's direction (buy the same right) instead of the opposite one - used when the leg closed at a profit.

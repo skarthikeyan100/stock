@@ -1,6 +1,7 @@
 /**
  * ExperimentalScaledStrategy (copy of ScaledHedgedStrategy + Rule 1 only), against a stubbed OrderClient (no broker):
- *   - rule 1: a same-direction re-buy buys initialQuantity with no opposite leg open, the scale formula of the OPPOSITE open leg otherwise
+ *   - rule 1: a same-direction re-buy buys initialQuantity with no opposite leg open, (opposite leg's drop / priceDiff) * initialQuantity otherwise (no
+ *     "initialQuantity +" term), in whole lots, never below initialQuantity, capped at the freeze quantity, cut by maxInvestment
  *   - no add mode, no stop: the target is sold through the resting sell at entry + priceDiff and re-bought; slDistance in the config has no effect
  * Run: npx tsc, then: node ./dist/test/experimentalScaled.test.js
  */
@@ -98,7 +99,7 @@ const peLeg = (s: any, entry = 100, qty = 65, ltp?: number, role: 'root' | 'hedg
     await s.hedge(closedCe, 'target met', true);
     assert(buys().length === 1 && buys()[0].args[1] === 'N23900CE' && buys()[0].args[3] === 65, `no opposite leg open: CE re-buy = initialQuantity 65 (got ${buys()[0]?.args[3]})`);
 
-    console.log('rule 1: opposite leg open and down 20 = 3x');
+    console.log('rule 1: opposite leg open and down 20 = 2x');
     calls = [];
     s = make({ slDistance: undefined });
     s.state.pair = { CE: { ...CE, premium: 180 } };
@@ -106,11 +107,12 @@ const peLeg = (s: any, entry = 100, qty = 65, ltp?: number, role: 'root' | 'hedg
     closedCe = s.addLeg(Object.assign(new Trade(), { quantity: 65, price: 170 }), { ...CE, premium: 170 }, 'CE', 'hedge', false);
     closedCe.status = 'closed';
     await s.hedge(closedCe, 'target met', true);
-    assert(buys().length === 1 && buys()[0].args[1] === 'N23900CE' && buys()[0].args[3] === 195, `PE open 100 -> 80: CE re-buy = 65 + 20/10 x 65 = 195 (got ${buys()[0]?.args[3]})`);
+    assert(buys().length === 1 && buys()[0].args[1] === 'N23900CE' && buys()[0].args[3] === 130, `PE open 100 -> 80: CE re-buy = 20/10 x 65 = 130 (got ${buys()[0]?.args[3]})`);
     calls = [];
     s = make({ slDistance: undefined, maxInvestment: 15000 });
     s.state.pair = { CE: { ...CE, premium: 180 } };
-    peLeg(s, 10, 65, 5);
+    peLeg(s, 100, 65, 50); // wants 50/10 x 65 = 325; room = 15000 - 6500 open cost = one lot at 100
+    assert(s.rebuyQuantity('CE') === 325, `uncut re-buy would be 325 (got ${s.rebuyQuantity('CE')})`);
     closedCe = s.addLeg(Object.assign(new Trade(), { quantity: 65, price: 170 }), { ...CE, premium: 170 }, 'CE', 'hedge', false);
     closedCe.status = 'closed';
     s.pairPx.set('CE23900', 100);
@@ -158,7 +160,7 @@ const peLeg = (s: any, entry = 100, qty = 65, ltp?: number, role: 'root' | 'hedg
     await s.processOptionQuote(tick('CE23900', 190));
     assert(buys().length === 0 && marketSells().length === 0, 'target touch with slDistance absent: nothing is bought or sold by the tick path');
 
-    console.log('rule 1 through a target fill: opposite leg open and down 20 = 3x');
+    console.log('rule 1 through a target fill: opposite leg open and down 20 = 2x');
     s = make();
     const ce = s.addLeg(Object.assign(new Trade(), { quantity: 65, price: 180 }), { ...CE, premium: 180 }, 'CE', 'hedge', false);
     s.state.pair = { CE: { ...CE, premium: 180 } };
@@ -166,7 +168,27 @@ const peLeg = (s: any, entry = 100, qty = 65, ltp?: number, role: 'root' | 'hedg
     peLeg(s, 100, 65, 80);
     calls = [];
     await s.updateTrade(fill('N23900CE', 'Sell', 65, 190));
-    assert(ce.status === 'closed' && buys().length === 1 && buys()[0].args[1] === 'N23900CE' && buys()[0].args[3] === 195, `CE sold at its target, re-bought 195 (got ${buys()[0]?.args[3]})`);
+    assert(ce.status === 'closed' && buys().length === 1 && buys()[0].args[1] === 'N23900CE' && buys()[0].args[3] === 130, `CE sold at its target, re-bought 130 (got ${buys()[0]?.args[3]})`);
+
+    console.log('rule 1: the formula (initialQuantity 130, priceDiff 10, opposite PE bought at 200); the adverse-move hedge on the same leg is unchanged');
+    for (const [ltp, rebuy, hedge, why] of [
+        [180, 260, 390, '20/10 x 130'],
+        [175, 325, 455, '25/10 x 130 = 325'],
+        [183, 195, 325, '17/10 x 130 = 221, floored to whole lots'],
+        [195, 130, 195, 'drop under priceDiff: never below initialQuantity'],
+        [200, 130, 130, 'opposite leg at its entry'],
+        [220, 130, 130, 'opposite leg above its entry'],
+        [undefined, 130, 130, 'no price for the opposite leg yet'],
+        [1, 1755, 1755, 'capped at the freeze quantity'],
+    ] as [number | undefined, number, number, string][]) {
+        s = make({ initialQuantity: 130, maxInvestment: 10_000_000 });
+        const pe = peLeg(s, 200, 130, ltp);
+        assert(s.rebuyQuantity('CE') === rebuy && s.hedgeQuantity(pe) === hedge, `PE 200 -> ${ltp ?? 'no tick'}: re-buy ${rebuy}, hedge ${hedge} (${why}) (got ${s.rebuyQuantity('CE')} / ${s.hedgeQuantity(pe)})`);
+    }
+    s = make({ initialQuantity: 130 });
+    assert(s.rebuyQuantity('CE') === 130, 'no opposite leg open: initialQuantity 130');
+    peLeg(s, 200, 130, 180);
+    assert(s.rebuyQuantity('PE') === 130, 'a same-right leg is not the opposite one: a PE re-buy with only a PE open stays 130');
 
     console.log(process.exitCode ? 'FAILED' : 'ALL TESTS PASSED');
     process.exit(process.exitCode ?? 0);
