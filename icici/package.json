@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "server": "tsc-watch --onSuccess \"sh -c 'node ./dist/server.js 2>&1 | tee server.log'\"",
-    "processes": "scripts/kill-stale-orchestrator.sh && tsc && concurrently -n tsc,orchestrator \"tsc -w --preserveWatchOutput\" \"sh -c 'node ./dist/orchestrator.js 2>&1 | scripts/orchestrator-log.sh'\"",
+    "processes": "scripts/kill-stale-orchestrator.sh && tsc && concurrently -n tsc,orchestrator \"tsc -w --preserveWatchOutput --watchFile useFsEventsOnParentDirectory\" \"sh -c 'node ./dist/orchestrator.js 2>&1 | scripts/orchestrator-log.sh'\"",
     "sync": "scripts/sync.sh",
     "eod-email": "tsc && node ./dist/tools/sendEodEmails.js",
     "welcome-email": "tsc && node ./dist/tools/sendWelcomeEmails.js",

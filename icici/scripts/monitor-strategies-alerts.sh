@@ -9,6 +9,7 @@
 # are kept (scripts/monitor-limitentry-events.sh).
 # Also emits one "=== SLOT MISSED" line per slot that BulkPcrAutoStart / NiftyChange did not trade, with the reason.
 # A filled buy+sell pair is routine and is NOT notified.
+# Also runs scripts/check-dist-fresh.js --watch (not with --once): an `[dist-check] ALERT:` line while dist/ differs from a build of src/.
 #
 # Usage: scripts/monitor-strategies-alerts.sh [--all|--once]   (passed through to every feed)
 
@@ -25,6 +26,7 @@ READER=(tail -n0 -F "$LOG_FILE")
     } | grep -E --line-buffered '!!!' | grep -E --line-buffered -v 'Cycle complete' &
     "$DIR/monitor-limitentry-events.sh" "$@" &
     "$DIR/monitor-sentiment-events.sh" "$@" &
+    if [ "${1:-}" != "--once" ]; then node "$DIR/check-dist-fresh.js" --watch & fi
     "${READER[@]}" 2>/dev/null \
         | sed -nuE -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange|MomentumAtFixedTime):([^]]*)\] (Missed ([0-9:]{5}) slot.*)/=== SLOT MISSED \1 \2 \3 \5: late - \4/p;t" \
                    -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange|MomentumAtFixedTime):([^]]*)\] ([0-9:]{5}):? ?(slot[: ]*)?(.*(skipp|not arming|not trading|not starting|already attempted|already handled).*)/=== SLOT MISSED \1 \2 \3 \4: \6/p" \
