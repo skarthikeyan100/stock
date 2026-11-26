@@ -99,6 +99,8 @@ wanted for the day and carry on with the routine below.
 ## Restart checklist
 
 Before restarting `npm run processes` with any open leg or enabled strategy:
+- Run `node scripts/check-dist-fresh.js` first (exit 0 fresh, 1 stale, 2 could not check). A restart loads `dist/`, which can be stale with no
+  compile error: never call a change live from a clean `tsc` or one new file. After the restart confirm it from a log line the change produces.
 1. Disable any strategy that must not trade after the restart. Some strategies keep their entry state only in memory, so after a
    restart they can enter again while an old position is still open.
 2. Log in to every broker the enabled strategies trade on (orders need it), then run `npm run sync`: a restart restores from Mongo only, so a position a broker closed
