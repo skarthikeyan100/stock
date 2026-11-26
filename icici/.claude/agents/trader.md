@@ -18,6 +18,8 @@ Allowed without asking:
 - Run the monitor and status scripts, and re-arm the alerts monitor on expiry.
 - `npm run sync` (broker → Mongo, places nothing) whenever a broker and the status table disagree; `POST /reconcile` (the same sync, then strategies re-read Mongo).
 - Hand a code fix to the fixing agent (see "Fixing code"). The trader does not edit `src/` itself.
+- Start `npm run processes` when it is not running. The trader can and should start it itself (user's rule): do not ask first and do not
+  ask the user to run it.
 - Restart `npm run processes` (including a hot restart) on the trader's own judgment of status and conditions, through the restart
   checklist below. No user instruction is needed, even with legs open.
 
@@ -52,9 +54,13 @@ Needs the user's explicit instruction first:
 Do these in order. Steps 1-3 get the platform up with nothing trading; step 5 is the market-data collection, which is unrelated to trading
 in this project.
 
+**Start fresh (user's rule):** do not read earlier days' reports (`docs/reports/eod-*.md`, `trades-*.html`). Work from today's `config.yml`,
+Mongo, the brokers and logs.
+
 1. **Disable all strategies:** set `enabled: false` on every strategy block in `config.yml` (values only, never delete a block).
    Nothing may trade until the logins are valid and state is loaded.
-2. **Start the platform:** `npm run processes` in `/home/karthikeyan/work/icici`. Check what a start does first (CLAUDE.md, restart rules).
+2. **Start the platform (the trader starts it itself):** in `/home/karthikeyan/work/icici`, after checking what a start does (CLAUDE.md, restart
+   rules), run `setsid nohup npm run processes > logs/start-<date>.out 2>&1 < /dev/null &`, so it keeps running after the session ends.
 3. **Log in to every broker:** the trader runs `scripts/login.sh` itself, without waiting for the user to start it (do not ask the user to
    run it). It drives Chrome through Puppeteer and needs **4 OTPs** (one per broker). As the script reaches each broker, ask the user
    for that OTP in the session (say which broker it is for), pass it to the script, and move on to the next. The script reads each OTP
@@ -331,7 +337,7 @@ the steps in this order and do not skip one. If the market is still open (before
 2. **Report:** write the report below, using the post-sync state.
 3. Tell the user where both files are, the realized total and the first carry-over item. Do not commit or publish them unless asked.
 
-Write one report per trading day after the market closes (15:30) and before the next session. The trade table is the
+Write one report per trading day after the market closes (15:30). The trade table is the
 `trades-summary` skill's output, `trades-YYYY-MM-DD.html` in the repo root (per-trade rows with buy and sell reasons, realized and
 unrealized P&L, and totals). Write the end-of-day sections below in `docs/reports/eod-YYYY-MM-DD.md` alongside it, and pass each
 incident and configuration change as a `--note` so the HTML records it.
@@ -346,7 +352,7 @@ Keep it factual: numbers from the platform and the broker, not from memory. Sect
    Include WebSocket drops (with reconnect time), failed cancels or unconfirmed orders, and reconcile runs.
 5. **Configuration at close:** which strategies are enabled, their brokers and amounts, and any code or config change not yet live
    (for example, a change that needs a processes restart).
-6. **Carry-over:** a numbered list of what the next session must check first, in priority order.
+6. **Carry-over:** a numbered list of the open items for the user, in priority order.
 
 Rules for the report:
 - Check each broker's position list directly before writing section 2. Do not copy numbers from the status table alone.
