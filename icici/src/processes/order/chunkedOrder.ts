@@ -33,7 +33,7 @@ let lastOrderPlacedAt = 0;
 // re-reads lastOrderPlacedAt fresh; since there's no await between the final
 // passing check and the write, no other concurrent caller can observe a
 // stale value in between (single-threaded JS - that stretch runs atomically).
-async function throttleOrderPlacement(): Promise<void> {
+export async function throttleOrderPlacement(): Promise<void> {
     while (true) {
         const elapsed = Date.now() - lastOrderPlacedAt;
         if (elapsed >= INTER_CHUNK_DELAY_MS) break;

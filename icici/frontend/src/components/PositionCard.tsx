@@ -7,7 +7,7 @@ import { optionRight } from '../utils/optionRight';
 // `demo`: the anonymous demo page renders this same card (its provider supplies the same trading context), with help bubbles on the
 // target/stop-loss controls and the pending-points hint while a fill waits for a price.
 export default function PositionCard({ trade, closed, demo }: { trade: Trade; closed?: boolean; demo?: boolean }) {
-  const { squareOff, setTargetStopLoss, trades } = useTrading();
+  const { squareOff, setTargetStopLoss, trades, locked, orderMode } = useTrading();
   // Shown only when the same contract is open on more than one broker (an account trading on several brokers): each row is its own position.
   const onSeveralBrokers = !closed && !!trade.broker && trades.some((o) => o.token === trade.token && o.broker !== trade.broker);
   const [targetPoints, setTargetPoints] = useState('');
@@ -42,9 +42,30 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
     }
   };
 
+  const broker = trade.broker ?? 'kite';
+  // This position's resting limit sell(s), and the live price a limit square-off would be placed at.
+  const resting = !closed && locked ? locked.pending.filter((o) => o.action === 'Sell' && o.broker === broker && o.token === String(trade.token) && o.tsym === trade.tsym) : [];
+  const bracket = broker === 'ant' && !!trade.antOrderNo;
+  const canLimit = !!locked && !bracket && ['kite', 'ant', 'breeze'].includes(broker);
+  const sellPrice = !closed && canLimit ? locked!.positionPrice(trade) : null;
+
+  const handleLimitSquareOff = async () => {
+    if (busy || !locked || sellPrice === null) return;
+    const price = sellPrice; // captured at the click: the confirmation below does not change it
+    const replaces = resting.length > 0 ? ` This replaces the limit sell resting at ₹${resting[0].price.toFixed(2)}.` : '';
+    if (!window.confirm(`Sell ${trade.quantity} ${trade.tsym}${onSeveralBrokers ? ` on ${trade.broker}` : ''} with a LIMIT order at ₹${price.toFixed(2)}?${replaces} The position stays open until the order fills.`)) return;
+    setBusy(true);
+    try {
+      await locked.squareOffAt(trade, price);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleSquareOff = async () => {
     if (busy) return;
-    if (!window.confirm(`Square off ${trade.tsym}${onSeveralBrokers ? ` on ${trade.broker}` : ''} (qty ${trade.quantity})? This cannot be undone.`)) return;
+    const atMarket = orderMode && orderMode !== 'market' ? ' at the MARKET price' : '';
+    if (!window.confirm(`Square off ${trade.tsym}${onSeveralBrokers ? ` on ${trade.broker}` : ''} (qty ${trade.quantity})${atMarket}? This cannot be undone.`)) return;
     setBusy(true);
     try {
       await squareOff(trade.token, trade.quantity, trade.broker);
@@ -108,17 +129,45 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
           </Col>
 
           {!closed && (
-            <Col xs="auto">
-              <Button
-                variant="outline-danger"
-                disabled={busy}
-                onClick={handleSquareOff}
-              >
-                Square Off
-              </Button>
+            <Col xs="auto" className="text-end">
+              {!orderMode || orderMode === 'market' ? (
+                <Button variant="outline-danger" disabled={busy} onClick={handleSquareOff}>
+                  Square Off
+                </Button>
+              ) : (
+                <>
+                  {sellPrice !== null && (
+                    <Button variant="outline-danger" disabled={busy} onClick={handleLimitSquareOff}>
+                      {resting.length > 0 ? 'Re-price' : 'Square Off'} @ &#8377;{sellPrice.toFixed(2)}
+                    </Button>
+                  )}
+                  {/* No price to lock (or none possible), or a limit sell not filling: selling at market is a separate, labelled choice. */}
+                  {(sellPrice === null || resting.length > 0) && (
+                    <div className={sellPrice !== null ? 'mt-1' : undefined}>
+                      <Button variant={sellPrice === null ? 'outline-danger' : 'link'} size="sm" className={sellPrice !== null ? 'p-0 text-danger' : undefined} disabled={busy} onClick={handleSquareOff}>
+                        Sell at market
+                      </Button>
+                      {sellPrice === null && (
+                        <small className="text-muted d-block">{bracket ? 'ANT bracket order: market only' : canLimit ? 'No live price right now' : orderMode === 'checking' ? 'Connecting…' : 'Market only'}</small>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </Col>
           )}
         </Row>
+
+        {resting.map((o) => (
+          <div key={`${o.broker}:${o.orderId}`} className="mt-2 d-flex justify-content-between align-items-center small">
+            <span className="text-warning-emphasis">
+              Limit sell of {o.quantity} resting at &#8377;{o.price.toFixed(2)}{o.filled > 0 ? ` (${o.filled} filled)` : ''}
+            </span>
+            <Button variant="outline-secondary" size="sm" onClick={() => void locked?.cancelOrder(o)}>
+              Cancel sell
+            </Button>
+          </div>
+        ))}
 
         {/* Target Price & Stop Loss */}
         {!closed && (

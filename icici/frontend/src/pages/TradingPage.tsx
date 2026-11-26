@@ -9,10 +9,11 @@ import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
 import NotificationBell from '../components/NotificationBell';
 import ThemeToggle from '../components/ThemeToggle';
+import PendingOrders from '../components/PendingOrders';
 import { useMarketHours } from '../utils/marketHours';
 
 export default function TradingPage() {
-  const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason } = useTrading();
+  const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason, index, setIndex, orderMode } = useTrading();
   const marketOpen = useMarketHours();
   const { user, logout, isAdmin } = useAuth();
   const handleLogout = async () => {
@@ -85,8 +86,8 @@ export default function TradingPage() {
           </Container>
         </div>
 
-        {/* NIFTY live price ticker */}
-        <NiftyTicker />
+        {/* Index live price, with the NIFTY / SENSEX switch (needs the server's SENSEX stream) */}
+        <NiftyTicker index={index} onSelect={orderMode === 'locked' ? setIndex : undefined} />
       </div>
 
       {nearLimit && (
@@ -112,6 +113,9 @@ export default function TradingPage() {
             <OrderEntry part="flash" />
           </>
         )}
+
+        {/* Results and resting orders: shown even when trading is blocked, so an order can still be cancelled */}
+        <PendingOrders />
 
         {/* Positions Tabs */}
         <div className="mt-4">

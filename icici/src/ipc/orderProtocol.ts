@@ -18,6 +18,15 @@ export type OrderRequestType =
     | 'getContractByPriceRange'
     | 'getToken'
     | 'manualBuy'
+    // The trading page's orders at the price the user clicked (order/lockedEntry.ts, lockedSquareOff.ts, lockedOrders.ts). New request types on purpose: an
+    // order process that predates them answers 'Unknown request type', so a newer frontend can never have a locked-price click executed at market.
+    // manualBuyLocked: resting limit buy { contract | (index, right, strikePrice), token, limitPrice, targetPoints?, stopLossPoints?, broker? } -> { results }.
+    // squareOffLocked: resting limit sell of an open position { token, broker?, price, quantity? } -> { results }.
+    // cancelUserOrder: cancel one of the caller's resting locked-price orders { broker, orderId }. userOrderState: read-only, every user's pending ones.
+    | 'manualBuyLocked'
+    | 'squareOffLocked'
+    | 'cancelUserOrder'
+    | 'userOrderState'
     | 'setTargetStopLoss'
     | 'antPlaceCoverOrder'
     | 'reloadSession'

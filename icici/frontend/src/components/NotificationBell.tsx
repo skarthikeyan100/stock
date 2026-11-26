@@ -5,7 +5,7 @@ import { apiFetch } from '../utils/api';
 
 interface Notification {
   _id: string;
-  type: 'drawdown_warning' | 'drawdown_breach' | 'payout_status' | 'level_status';
+  type: 'drawdown_warning' | 'drawdown_breach' | 'payout_status' | 'level_status' | 'order';
   message: string;
   read: boolean;
   createdAt: string;

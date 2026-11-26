@@ -34,6 +34,7 @@ const READ_ONLY_REQUESTS: ReadonlySet<OrderRequestType> = new Set<OrderRequestTy
     'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp', 'getOrderPrice', 'paperBook',
     // Not orders: they restore a runtime cap / setting that a latched strategy re-applies when it reloads.
     'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits', 'restoreFromMongo',
+    'userOrderState',
 ]);
 type NoOrdersScope = { label: string; active: boolean };
 const noOrdersScope = new AsyncLocalStorage<NoOrdersScope>();
@@ -272,6 +273,23 @@ class OrderClient {
 
     async stats(userId = 'Default'): Promise<{ trades: any[]; closedTrades: any[]; userPnL: Record<string, number> }> {
         return this.call('stats', userId, {});
+    }
+
+    // The trading page's orders at the clicked price (see orderProtocol.ts).
+    async manualBuyLocked(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; token?: string; limitPrice: number; targetPoints?: number; stopLossPoints?: number }): Promise<{ results: Array<{ broker: string; ok: boolean; tsym?: string; quantity?: number; limitPrice?: number; orderIds?: string[]; error?: string }> }> {
+        return this.call('manualBuyLocked', userId, payload);
+    }
+
+    async squareOffLocked(userId: string, payload: { token: string; broker?: string; price: number; quantity?: number }): Promise<{ results: Array<{ broker: string; tsym: string; ok: boolean; quantity: number; limitPrice: number; orderIds: string[]; error?: string; closed?: boolean }> }> {
+        return this.call('squareOffLocked', userId, payload);
+    }
+
+    async cancelUserOrder(userId: string, payload: { broker: string; orderId: string }): Promise<{ status: 'cancelled' | 'filled' | 'unconfirmed'; filledQuantity?: number }> {
+        return this.call('cancelUserOrder', userId, payload);
+    }
+
+    async userOrderState(timeoutMs = 5000): Promise<{ lockedPrice: boolean; pending: any[]; positions: Array<{ user: string; broker: string; tsym: string; token: string }>; outcomes: any[] }> {
+        return this.call('userOrderState', '', {}, timeoutMs);
     }
 
     async manualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; price?: number; quantity?: number; targetPoints?: number; stopLossPoints?: number; limitPrice?: number; contractorBudget?: { amount: number; strict?: boolean } }): Promise<any> {

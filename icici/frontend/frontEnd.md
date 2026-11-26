@@ -31,6 +31,12 @@ The script (`frontend/update-symbols.sh`) reads the local Zerodha NFO/BFO instru
 
 ---
 
+## Trading page: orders at the clicked price, index switch
+
+`context/useLockedOrders.ts` asks `/order/locked-capability`. When true: every buy and square-off button shows a live price from `/order/pricestream`, a click sends that price as a limit order, resting orders are listed with Cancel (`components/PendingOrders.tsx`), and the ticker has a NIFTY / SENSEX switch (remembered in `localStorage['tradingIndex']`) that drives the ticker, Flash Trade and Search & Buy. Otherwise the page behaves as before (market orders, NIFTY) and says so. The demo page is unchanged. `npm run build` deploys; build with `SKIP_DEPLOY=1` to check only.
+
+---
+
 ## Directory Structure
 
 ```

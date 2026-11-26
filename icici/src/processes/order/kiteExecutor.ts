@@ -1017,8 +1017,18 @@ function armHardStop(row: TradeRow): void {
 
 const rowOfKite = (userId: string, tsym: string): TradeRow | undefined => bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && (t.broker ?? 'kite') === 'kite');
 
+/** True while this position's GTTs are being replaced (a square-off must not start in the middle of it). */
+export const isReprotecting = (userId: string, tsym: string): boolean => reprotectRuns.has(`${userId}:${tsym}`);
+
+/** Books any GTT of `tsym` that has already fired and adopts one whose id is unknown, waiting out a poll already in flight. */
+export async function settleGtts(tsym: string): Promise<void> {
+    for (let i = 0; i < 20 && gttPollInFlight; i++) await new Promise((r) => setTimeout(r, 500));
+    gttAdoptNow.add(tsym);
+    await pollGttFills();
+}
+
 // Run after a manual buy has booked: only a row that shows merge evidence (several GTT ids, or the budget stop was just raised over a live GTT).
-async function reprotectAfterBuy(userId: string, tsym: string): Promise<void> {
+export async function reprotectAfterBuy(userId: string, tsym: string): Promise<void> {
     const row = rowOfKite(userId, tsym);
     if (!row) return;
     const ids = gttIdsOf(row);
@@ -1048,6 +1058,8 @@ export async function reprotectToBudget(userId: string, tsym: string): Promise<v
 async function reprotectOnce(userId: string, tsym: string, state: { again: boolean }): Promise<void> {
     const row = rowOfKite(userId, tsym);
     if (!row || row.strategy || !row.token || bookkeeping.lossBudgetFor(userId) === undefined) return;
+    // A resting sell of this position (a square-off at a locked price) already owns the quantity: a GTT placed next to it could sell it twice.
+    if (findPendingOrdersForSymbol(userId, tsym).some((o) => o.action === 'Sell')) { Log.log(`[order] re-protect ${tsym} (${userId}): a sell is resting - no GTT placed, the in-app monitor protects the position`); return; }
     const ids = gttIdsOf(row);
     if (ids.length === 0 || !(Number(row.stopLossPrice) > 0) || row.targetPrice == null) return;
     const kite = Kite.getInstance();

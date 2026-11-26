@@ -28,6 +28,9 @@ import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping, { MongoRestoreResult, EodBrokerReport } from './order/bookkeeping';
 import { onEntryFill, onEntryCancelled } from './order/entryExits';
+import { lockedBuyOnBroker, loadLockedEntries, LockedBuyResult } from './order/lockedEntry';
+import { squareOffAtPrice, sweepUserExits, onExitFill, loadUserExits } from './order/lockedSquareOff';
+import { userOrderState, pendingLockedOrders, cancelLockedOrder, onLockedFill, onLockedTrackerCancel, sweepPartialBuys, setLockedCanceller } from './order/lockedOrders';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
 import { getOrderPrice } from './order/orderPrice';
@@ -106,6 +109,9 @@ bookkeeping.onFill(onUserSell);
 bookkeeping.setBrokerPriceSource((broker) => brokerLastPrices(broker));
 // A filled resting limit entry (a contractor's recommendation, and the admin's mirror of it) gets its target and stop-loss (order/entryExits.ts).
 bookkeeping.onFill((userId, trade) => { void onEntryFill(userId, trade); });
+// The trading page's resting orders at the clicked price: record the outcome of a fill, close a square-off's record once the position is gone.
+bookkeeping.onFill((userId, trade) => { onLockedFill(userId, trade); onExitFill(userId, trade); });
+setLockedCanceller((broker, userId, orderId, exchange) => getBrokerExecutor(userId, broker).cancelOrder(orderId, exchange));
 
 bookkeeping.onFill((userId, trade) => {
     // Net open quantity of this token once the fill is booked (listeners run after booking), summed over every broker on the same
@@ -124,6 +130,7 @@ bookkeeping.onPositionsChanged(() => {
 
 for (const trackerBroker of TRACKER_BROKERS) {
     TRACKERS[trackerBroker].onCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
+        onLockedTrackerCancel(broker, orderId, quantity, reason, rejectReason);
         if (action === 'Buy') { void onEntryCancelled(userId, orderId); void forgetRestingMirror(userId, instrumentToken); }
         // A locked-price sell (max-profit trip) is re-placed here at its locked price, owned by the order side whether or not a strategy is
         // enabled (order/lockedSells.ts). Handled = the strategies are not told (their resting-sell bookkeeping stays right).
@@ -871,6 +878,26 @@ async function manualBuyFanOut(req: OrderRequest, brokers: string[]): Promise<Or
     return { kind: 'response', id: req.id, ok: true, result: { fanOut: true, results } };
 }
 
+// A frontend buy at the clicked price, on every broker of the user (each independent, like the market buy; only a single-broker buy is mirrored).
+async function manualBuyLocked(req: OrderRequest): Promise<OrderResponse> {
+    await waitForReconcile();
+    const userBrokers = bookkeeping.getUserBrokers(req.userId);
+    const explicit = normalizeBrokerName(req.payload?.broker);
+    if (explicit && !userBrokers.includes(explicit as any)) return { kind: 'response', id: req.id, ok: false, error: `${NOT_PLACED_TAG} broker '${explicit}' is not one of this user's brokers (${userBrokers.join(', ')})` };
+    const brokers: string[] = explicit ? [explicit] : userBrokers;
+    const { broker: _ignored, ...payload } = req.payload ?? {};
+    const gate = <T>(fn: () => Promise<T>): Promise<T> => withUserGate(req.userId, fn);
+    const settled = await Promise.allSettled(brokers.map((b) => lockedBuyOnBroker(req.userId, payload, b, brokers.length === 1, gate)));
+    // One broker: its error goes back as it is (with its placed / may-be-live flags).
+    if (brokers.length === 1 && settled[0].status === 'rejected') throw settled[0].reason;
+    const results = settled.map((s, i) => s.status === 'fulfilled'
+        ? { ok: true as const, ...(s.value as LockedBuyResult) }
+        : { ok: false as const, broker: brokers[i], error: String(s.reason?.message ?? s.reason) });
+    for (const [i, s] of settled.entries()) if (s.status === 'rejected') Log.log(`[order] limit buy for ${req.userId} on ${brokers[i]} FAILED:`, s.reason);
+    if (!results.some((r) => r.ok)) return { kind: 'response', id: req.id, ok: false, error: results.map((r) => `${r.broker}: ${r.error}`).join('; ') };
+    return { kind: 'response', id: req.id, ok: true, result: { results } };
+}
+
 export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     req = upgradeLegacyRequest(req);
     try {
@@ -1231,6 +1258,24 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 if (!explicit && userBrokers.length > 1) return await manualBuyFanOut(req, userBrokers);
                 return await manualBuyOnOneBroker(req, explicit || userBrokers[0], true);
             }
+
+            case 'manualBuyLocked':
+                return await manualBuyLocked(req);
+
+            case 'squareOffLocked': {
+                await waitForReconcile();
+                const { token, broker, price, quantity } = req.payload;
+                const result = await squareOffAtPrice(req.userId, { token: String(token), broker: normalizeBrokerName(broker) || undefined, price, quantity });
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'cancelUserOrder': {
+                const result = await cancelLockedOrder(req.userId, normalizeBrokerName(req.payload.broker), String(req.payload.orderId), 'cancelled by the user');
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'userOrderState':
+                return { kind: 'response', id: req.id, ok: true, result: userOrderState() };
 
             case 'setTargetStopLoss': {
                 await setTargetStopLoss(req.userId, req.payload.token, req.payload.targetPoints, req.payload.stopLossPoints, normalizeBrokerName(req.payload?.broker) || undefined);
@@ -1726,6 +1771,8 @@ export async function startOrderProcess() {
     for (const name of TRACKER_BROKERS) {
         await TRACKERS[name].load().catch((e) => Log.log(`[order] startup: restoring pending ${name} limit orders failed (continuing):`, e));
     }
+    await loadLockedEntries().catch((e) => Log.log('[order] startup: restoring the resting locked-price buys failed (continuing):', e));
+    await loadUserExits().catch((e) => Log.log('[order] startup: restoring the resting square-off sells failed (continuing):', e));
 
     // cancelAnyRestingLimitSell is now module-scoped (see its definition above
     // handleRequest) so both this drawdown-breach handler and
@@ -1759,6 +1806,10 @@ export async function startOrderProcess() {
     // In-flight guard for short-leg buy-to-close, shared by the breach handler and the expiry sweep.
     const expirySquareOffInFlight = new Set<string>();
     bookkeeping.onDrawdownBreach(async (user) => {
+        // A buy still resting at a clicked price must not fill after the breach (not awaited: the exits below must not wait for it).
+        for (const o of pendingLockedOrders().filter((p) => p.userId === user && p.action === 'Buy')) {
+            void cancelLockedOrder(user, o.broker, o.orderId, 'drawdown limit breached').catch((e) => Log.log('[order] drawdown breach: cancelling the resting buy failed for', o.tsym, e));
+        }
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
                 await forceCloseTrade(trade);
@@ -1816,6 +1867,8 @@ export async function startOrderProcess() {
     // on demand (`npm run sync` -> POST /sync). No broker is read intraday for it.
     guardedInterval('eodReconcile', eodReconcileTick, 60_000);
     guardedInterval('unresolvedFillsTick', async () => unresolvedFillsTick(), 5 * 60_000);
+    guardedInterval('sweepUserExits', () => sweepUserExits(), 4_000); // puts a position's GTT back once its square-off sell is gone
+    guardedInterval('sweepPartialBuys', () => sweepPartialBuys(), 5_000); // a partly filled locked-price buy is cut so its fill is booked and protected
     for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name === 'kite' ? '' : name[0].toUpperCase() + name.slice(1)}LimitOrders`, () => TRACKERS[name].poll(), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than

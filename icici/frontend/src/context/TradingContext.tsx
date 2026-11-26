@@ -3,6 +3,7 @@ import { useAuth } from './AuthContext';
 import { useEventSource } from '../hooks/useEventSource';
 import { useMarketHours } from '../utils/marketHours';
 import { apiPost, readError, apiFetch } from '../utils/api';
+import { LockedOrders, OrderMode, PageIndex, readSavedIndex, saveIndex, useLockedOrders, useOrderMode } from './useLockedOrders';
 
 export interface Trade {
   tsym: string;
@@ -26,6 +27,8 @@ export interface Trade {
   pendingStopLossPoints?: number;
   // Which broker holds this position (an account trading on several brokers has one row per broker for the same contract).
   broker?: string;
+  // Set on an ANT bracket position: its exit lives at the broker, so it cannot be sold at a chosen price.
+  antOrderNo?: string;
 }
 
 interface TradingState {
@@ -45,6 +48,13 @@ interface TradingState {
   squareOff: (token: string, qty: number, broker?: string) => Promise<boolean>;
   setTargetStopLoss: (token: string, targetPoints: number, stopLossPoints: number, broker?: string) => Promise<boolean>;
   clearError: () => void;
+  // The index the page trades (ticker, Flash Trade, Search & Buy). Absent in the demo, which is NIFTY only.
+  index?: PageIndex;
+  setIndex?: (index: PageIndex) => void;
+  // How buy / square-off clicks are executed (see useLockedOrders.ts). Absent in the demo.
+  orderMode?: OrderMode;
+  // Present while orderMode is 'locked': limit orders at the price shown on the button.
+  locked?: LockedOrders;
 }
 
 // Exported (not just the Provider) so DemoTradingProvider can feed the same
@@ -63,7 +73,29 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const [tradingBlocked, setTradingBlocked] = useState(false);
   const [blockReason, setBlockReason] = useState<string | null>(null);
 
-  const openPnL = trades.reduce((sum, trade) => {
+  const orderMode = useOrderMode(!!user);
+  const [savedIndex, setSavedIndex] = useState<PageIndex>(readSavedIndex);
+  // The index switch needs the server's SENSEX stream and priced contracts: without them the page is NIFTY, as before.
+  const index: PageIndex = orderMode === 'locked' ? savedIndex : 'NIFTY';
+  const setIndex = useCallback((next: PageIndex) => { setSavedIndex(next); saveIndex(next); }, []);
+
+  const describeOrderError = (body: any): string => {
+    // Backend sends { error: string }, not { message: string } - read the
+    // field it actually sends. Kite's raw insufficient-funds message
+    // ("ageing debit balance ... collateral margin ...") is accurate but not
+    // user-friendly, so it's mapped to a plain-language equivalent.
+    const message: string = body?.error || body?.message || '';
+    if (/debit balance|collateral margin/i.test(message)) {
+      return 'Order rejected as funds are not available';
+    }
+    return message || 'Order rejected';
+  };
+
+  const locked = useLockedOrders({ mode: orderMode, index, setPlacing: setPlacingOrder, setError: setOrderError, describeError: (message) => describeOrderError({ error: message }) });
+  // The same live price on the position cards, their P&L and the header as on the square-off button.
+  const shownTrades = locked ? trades.map((t) => { const price = locked.positionPrice(t); return price === null ? t : { ...t, lastTradePrice: price }; }) : trades;
+
+  const openPnL = shownTrades.reduce((sum, trade) => {
     if (trade.lastTradePrice && trade.price) {
       return sum + (trade.lastTradePrice - trade.price) * trade.quantity;
     }
@@ -135,18 +167,6 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       clearInterval(interval);
     };
   }, [user?.email]);
-
-  const describeOrderError = (body: any): string => {
-    // Backend sends { error: string }, not { message: string } - read the
-    // field it actually sends. Kite's raw insufficient-funds message
-    // ("ageing debit balance ... collateral margin ...") is accurate but not
-    // user-friendly, so it's mapped to a plain-language equivalent.
-    const message: string = body?.error || body?.message || '';
-    if (/debit balance|collateral margin/i.test(message)) {
-      return 'Order rejected as funds are not available';
-    }
-    return message || 'Order rejected';
-  };
 
   // An account that trades on several brokers gets one independent order per broker; the reply is OK when at least one is in, so a broker
   // that did not place is reported here instead of passing silently.
@@ -232,7 +252,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setOrderError(null), []);
 
   return (
-    <TradingContext.Provider value={{ trades, closedTrades, openPnL, totalPnL, usedAmount, placingOrder, isOrderDisabled, tradingBlocked, blockReason, orderError, placeOrder, placeContractOrder, squareOff, setTargetStopLoss, clearError }}>
+    <TradingContext.Provider value={{ index, setIndex, orderMode, locked, trades: shownTrades, closedTrades, openPnL, totalPnL, usedAmount, placingOrder, isOrderDisabled, tradingBlocked, blockReason, orderError, placeOrder, placeContractOrder, squareOff, setTargetStopLoss, clearError }}>
       {children}
     </TradingContext.Provider>
   );

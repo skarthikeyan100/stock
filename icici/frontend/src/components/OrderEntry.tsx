@@ -39,7 +39,10 @@ function feedSymbols(name: string): ContractItem[] {
 export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'flash' | 'search' }) {
   const showFlash = part !== 'search';
   const showSearch = part !== 'flash';
-  const { placeOrder, placeContractOrder, isOrderDisabled, placingOrder, totalPnL, orderError, clearError } = useTrading();
+  const { placeOrder, placeContractOrder, isOrderDisabled, placingOrder, totalPnL, orderError, clearError, locked, orderMode, index = 'NIFTY' } = useTrading();
+  // Not yet known whether the server takes orders at the shown price: nothing is bought until it is.
+  const buyDisabled = isOrderDisabled || orderMode === 'checking';
+  const otherIndex = index === 'NIFTY' ? 'SENSEX' : 'NIFTY';
   const { user } = useAuth();
   const { mode: demoMode } = useDemoMode(); // demo only: 'feed' = recorded day replayed in the browser
 
@@ -144,6 +147,24 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
     return () => { cancelled = true; clearInterval(timer); };
   }, [selectedSymbol, demo]);
 
+  // The picked contract's live price comes over the page's price stream.
+  const setSearchContract = locked?.setSearchContract;
+  const searchContract = showSearch && locked ? selectedSymbol?.value ?? null : null;
+  useEffect(() => {
+    if (!showSearch || !setSearchContract) return;
+    setSearchContract(searchContract);
+  }, [searchContract, showSearch, !!setSearchContract]);
+
+  // After an index switch, a contract of the other index must not stay selected (or listed).
+  useEffect(() => {
+    setShowDropdown(false);
+    setSuggestions([]);
+    if (selectedSymbol?.value.startsWith(`${otherIndex}_`) || input.startsWith(otherIndex)) {
+      setSelectedSymbol(null);
+      setInput('');
+    }
+  }, [index]);
+
   const handleInputChange = (value: string) => {
     const upper = value.toUpperCase();
     setInput(upper);
@@ -151,7 +172,8 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
 
     // Recorded-day demo: whatever underlying the user types (TCS, RELIANCE, ...) plays the same recorded NIFTY option prices.
     const pool = demo && demoMode === 'feed' ? feedSymbols(upper.match(/^[A-Z][A-Z0-9&-]{1,}/)?.[0] ?? 'NIFTY') : symbols;
-    const matches = matchSymbols(upper, pool, (s) => s.label);
+    // With the index switch on the page, the other index's contracts are listed only after switching to it.
+    const matches = matchSymbols(upper, orderMode === 'locked' ? pool.filter((s) => !s.value.startsWith(`${otherIndex}_`)) : pool, (s) => s.label);
     setSuggestions(matches);
     setShowDropdown(matches.length > 0);
   };
@@ -162,9 +184,14 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
     setShowDropdown(false);
   };
 
+  // The price on the Buy button for the picked contract: what a click sends as the limit.
+  const shownContract = locked && selectedSymbol && locked.searchQuote?.contract === selectedSymbol.value ? locked.searchQuote : null;
+
   const handleContractBuy = async (e: FormEvent) => {
     e.preventDefault();
-    if (!selectedSymbol) return;
+    if (!selectedSymbol || orderMode === 'checking') return;
+    const shown = shownContract; // captured at the click
+    if (locked && !shown) return;
     // Points must be positive finite numbers (a negative/zero value would put the target/stop on the wrong side).
     const { target: tp, stopLoss: sl, error } = parsePoints(targetPoints, stopLossPoints);
     if (error) {
@@ -172,15 +199,37 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
       return;
     }
     // Keep the selection if the order was rejected, so the user can correct and retry.
-    const ok = await placeContractOrder(selectedSymbol.value, tp, sl);
+    const ok = locked && shown ? await locked.buyContract(shown, tp, sl) : await placeContractOrder(selectedSymbol.value, tp, sl);
     if (ok) {
       setInput('');
       setSelectedSymbol(null);
     }
   };
 
-  const handleTrendBuy = async (right: string) => {
+  const handleTrendBuy = async (right: 'call' | 'put') => {
     await placeOrder(right);
+  };
+
+  // With a price on the button, the click buys exactly that contract at exactly that price.
+  const flashButton = (right: 'call' | 'put') => {
+    const label = right === 'call' ? 'Up' : 'Down';
+    const shown = locked ? locked.flash[right] : null;
+    return (
+      <Button
+        variant={right === 'call' ? 'success' : 'danger'}
+        disabled={buyDisabled || (!!locked && !shown)}
+        title={shown ? `Limit buy ${shown.tradingSymbol} at ₹${shown.price.toFixed(2)}` : undefined}
+        style={locked ? { minWidth: 150 } : undefined}
+        onClick={() => { if (!locked) void handleTrendBuy(right); else if (shown) void locked.buyFlash(right, shown); }}
+      >
+        {placingOrder ? <Spinner animation="border" size="sm" /> : !locked ? label : (
+          <>
+            <span className="fw-bold">{label}{shown ? ` @ ₹${shown.price.toFixed(2)}` : ''}</span>
+            <span className="d-block" style={{ fontSize: '0.7rem' }}>{shown ? `${index} ${shown.strike} ${right === 'call' ? 'CE' : 'PE'}` : 'waiting for price…'}</span>
+          </>
+        )}
+      </Button>
+    );
   };
 
   const lossExceeded = totalPnL <= -(demo ? DEMO_MAX_LOSS : (user?.lossLimit ?? 15000));
@@ -198,20 +247,8 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
           {demo && <DemoHelpTip text="One-click demo trade: Up buys the at-the-money NIFTY Call, Down buys the at-the-money Put. The position starts pending and fills once a live price is received - no real order is ever placed." />}
         </legend>
         <div className="d-flex align-items-center gap-2 flex-wrap">
-          <Button
-            variant="success"
-            disabled={isOrderDisabled}
-            onClick={() => handleTrendBuy('call')}
-          >
-            {placingOrder ? <Spinner animation="border" size="sm" /> : 'Up'}
-          </Button>
-          <Button
-            variant="danger"
-            disabled={isOrderDisabled}
-            onClick={() => handleTrendBuy('put')}
-          >
-            {placingOrder ? <Spinner animation="border" size="sm" /> : 'Down'}
-          </Button>
+          {flashButton('call')}
+          {flashButton('put')}
           <small className="text-muted" style={{ fontSize: '0.75rem' }}>
             Predict the trend {demo ? '(demo)' : ''}
           </small>
@@ -221,6 +258,9 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
             </Button>
           )}
         </div>
+        {!demo && locked && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>A click places a limit buy at the price on the button. If the market has moved, it waits under Pending orders.</div>}
+        {!demo && orderMode === 'market' && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>Orders are placed at the market price.</div>}
+        {!demo && orderMode === 'checking' && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>Connecting to the order service…</div>}
       </fieldset>
       {!demo && (
         <FlashSettingsModal show={showFlashSettings} onHide={() => setShowFlashSettings(false)}
@@ -244,7 +284,7 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
             <InputGroup>
               <Form.Control
                 type="text"
-                placeholder={demo ? 'e.g. NIFTY 24100 CE' : 'e.g. NIFTY_24100_CE'}
+                placeholder={demo ? 'e.g. NIFTY 24100 CE' : index === 'SENSEX' ? 'e.g. SENSEX_80000_CE' : 'e.g. NIFTY_24100_CE'}
                 value={input}
                 onChange={(e) => handleInputChange(e.target.value)}
                 disabled={isOrderDisabled}
@@ -252,9 +292,9 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
               <Button
                 variant="success"
                 type="submit"
-                disabled={isOrderDisabled || !selectedSymbol}
+                disabled={buyDisabled || !selectedSymbol || (!!locked && !shownContract)}
               >
-                {placingOrder ? <Spinner animation="border" size="sm" /> : 'Buy'}
+                {placingOrder ? <Spinner animation="border" size="sm" /> : shownContract ? `Buy @ ₹${shownContract.price.toFixed(2)}` : locked && selectedSymbol ? 'Waiting for price…' : 'Buy'}
               </Button>
             </InputGroup>
             <div className="d-flex gap-2 mt-2">
@@ -318,7 +358,7 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
                   ['Type', quote.optionType === 'CE' ? 'CE (Call)' : 'PE (Put)'],
                   ['Expiry', quote.expiry ? new Date(quote.expiry + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'],
                   ['Lot size', fmtNum(quote.lotSize, 0)],
-                  ['Price (LTP)', fmtNum(quote.ltp)],
+                  ['Price (LTP)', fmtNum(shownContract?.price ?? quote.ltp)],
                   ['High', fmtNum(quote.high)],
                   ['Low', fmtNum(quote.low)],
                   ['Buy qty', fmtNum(quote.bidQty, 0)],

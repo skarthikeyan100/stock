@@ -11,6 +11,8 @@ import { DataLink } from '../ipc/DataLink';
 import { isLoopback } from '../middleware/cloudflareOnly';
 import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp, ipHoldsToken, mergeRestoredHold } from './demoLease';
 import { asyncRouter } from './asyncRouter';
+import { addPriceClient, removePriceClient, priceStreamResponses } from './priceFeed';
+import { formatCanonicalSymbol, parseCanonicalSymbol } from '../model/CanonicalSymbol';
 import { resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
 const router = asyncRouter();
@@ -79,6 +81,29 @@ const replayNifty = () => (lastNiftyQuote ? `data: ${JSON.stringify({ nifty: las
 
 router.get('/niftystream', requireAuth, async function (req, res) {
     openMarketStream(req, res, niftyStreamClients, replayNifty);
+});
+
+// The SENSEX index for the trading page's index switch. A path of its own: a server without it answers 404, so a page can never show NIFTY
+// under a SENSEX label.
+export const sensexStreamClients = new Set<express.Response>();
+let lastSensexQuote: any = null;
+export function setLastSensexQuote(q: any): void { lastSensexQuote = q; }
+router.get('/niftystream/sensex', requireAuth, async function (req, res) {
+    openMarketStream(req, res, sensexStreamClients, () => (lastSensexQuote ? `data: ${JSON.stringify({ sensex: lastSensexQuote })}\n\n` : null));
+});
+
+// Live prices of what the trading page can buy or sell at a click, and the viewer's resting orders (see priceFeed.ts).
+router.get('/order/pricestream', requireAuth, function (req, res) {
+    const index = String(req.query.index ?? 'NIFTY');
+    if (index !== 'NIFTY' && index !== 'SENSEX') { res.status(400).json({ error: 'index must be NIFTY or SENSEX' }); return; }
+    let contract: string | null = null;
+    if (typeof req.query.contract === 'string' && req.query.contract) {
+        try { contract = formatCanonicalSymbol(parseCanonicalSymbol(req.query.contract)); }
+        catch { res.status(400).json({ error: 'contract must look like NIFTY_25550_CE' }); return; }
+    }
+    openSse(res);
+    req.on('close', () => removePriceClient(res));
+    addPriceClient(res, resolveUser(req), index, contract);
 });
 
 router.get('/optionstream', requireAuth, async function (req, res) {
@@ -419,6 +444,8 @@ setInterval(() => {
     const heartbeat = ': heartbeat\n\n';
     for (const res of antStreamClients) res.write(heartbeat);
     for (const res of niftyStreamClients) res.write(heartbeat);
+    for (const res of sensexStreamClients) res.write(heartbeat);
+    for (const res of priceStreamResponses()) res.write(heartbeat);
     for (const res of optionStreamClients) res.write(heartbeat);
     for (const res of positionStreamClients.keys()) res.write(heartbeat);
     for (const res of notificationStreamClients.keys()) res.write(heartbeat);

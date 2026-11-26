@@ -7,9 +7,10 @@ import { useAuth } from '../context/AuthContext';
 const ITEMS: Array<[string, string, string?]> = [
   ['What is an option?', 'An option is a bet on where the market will go. If the market moves the way you guessed, your option becomes worth more and you can sell it for a profit.'],
   ['What are CE and PE?', 'CE (Call) is a bet that the market will go UP. PE (Put) is a bet that the market will go DOWN. Pick CE if you think it will rise, PE if you think it will fall.'],
-  ['How do I use Flash Trade?', 'Flash Trade is the quick way. Press Up if you think the market will rise, or Down if you think it will fall. It buys right away. Use "Settings" next to it to change how much it buys and your target and stop loss.'],
+  ['How do I use Flash Trade?', 'Flash Trade is the quick way. Press Up if you think the market will rise, or Down if you think it will fall. When the button shows a price, it places a buy at exactly that price: if the market has moved, the order waits under Pending orders, where you can cancel it. Use "Settings" next to it to change how much it buys and your target and stop loss.'],
   ['How do I use Search & Buy?', 'Type the first 3 letters of a stock or index, for example TCS or NIFTY, and pick a contract from the list. You will see its price, strike and expiry. Fill in a target and stop loss if you want, then press Buy.'],
   ['What is a target point?', 'It is the profit you want. If you set 20, the platform sells for you once the price has gone up by 20 points, so you keep that gain.'],
+  ['How does Square Off work?', 'When the button shows a price, Square Off places a sell at exactly that price. Your position stays open until it fills, and your target and stop loss still apply. You can cancel the sell, press the button again to move it to the new price, or choose "Sell at market".'],
   ['What is a stop loss?', 'It is your safety net. If you set 10, the platform sells for you once the price has gone down by 10 points, so a bad trade cannot hurt you more than that.'],
   ['Want to learn options?', 'A free, step-by-step course on how options work:', 'https://zerodha.com/varsity/module/option-theory/'],
 ];

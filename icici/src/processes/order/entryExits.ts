@@ -13,8 +13,20 @@ import { attachProtection } from './attachProtection';
 // close) leaves a row that onEntryCancelled removes, or that is ignored once its day is over.
 
 export interface EntryExit {
-    userId: string; orderId: string; tsym: string; token: string; exchange: 'NFO' | 'BFO'; broker: 'kite' | 'ant';
+    userId: string; orderId: string; tsym: string; token: string; exchange: 'NFO' | 'BFO'; broker: 'kite' | 'ant' | 'breeze';
     targetPrice: number; stopLossPrice: number; day: string; createdAt: Date;
+    /** A frontend buy at the locked (clicked) price (order/lockedEntry.ts): protected lot by lot by the registered lot protector, not by attachProtection.
+     *  targetPrice / stopLossPrice are 0 when that side is not set. */
+    lot?: boolean;
+    quantity?: number;
+    limitPrice?: number;
+    targetPoints?: number;
+    stopPoints?: number;
+    /** One of several orders of a buy above the freeze quantity: exits are watched in-app on the whole position. */
+    inAppExit?: boolean;
+    clickId?: string;
+    /** The admin's mirror of a user's resting entry: the user and click it copies (cancelled together). */
+    mirrorOf?: { userId: string; clickId: string };
 }
 const col = () => Mongo.getInstance()?.db?.collection('entryExits');
 const today = () => new Date().toLocaleDateString('en-CA');
@@ -25,15 +37,40 @@ export async function registerEntryExit(row: Omit<EntryExit, 'day' | 'createdAt'
     await c.insertOne({ ...row, day: today(), createdAt: new Date() });
 }
 
+type LotProtector = (userId: string, trade: Trade, row: EntryExit) => Promise<void>;
+let lotProtector: LotProtector | undefined;
+/** Wired by order/lockedEntry.ts (it imports the executors, which import this module). */
+export function registerLotProtector(fn: LotProtector): void { lotProtector = fn; }
+
+// A fill and the cancel of the same order's remainder arrive back to back (a partly filled entry that is then cancelled). They are handled one after
+// the other, fill first, so the cancel cannot delete the row before the fill has claimed it (which would leave the filled part without its exits).
+const perOrder = new Map<string, Promise<void>>();
+function serialized(orderId: string, fn: () => Promise<void>): Promise<void> {
+    const run = (perOrder.get(orderId) ?? Promise.resolve()).then(fn, fn);
+    perOrder.set(orderId, run);
+    const done = () => { if (perOrder.get(orderId) === run) perOrder.delete(orderId); };
+    run.then(done, done);
+    return run;
+}
+
 /** bookkeeping.onFill listener: a filled resting entry gets its target and stop. Claims the row first (delete), so a repeated fill event attaches once. */
-export async function onEntryFill(userId: string, trade: Trade): Promise<void> {
-    if (trade.action !== 'Buy' || !trade.brokerOrderId) return;
+export function onEntryFill(userId: string, trade: Trade): Promise<void> {
+    if (trade.action !== 'Buy' || !trade.brokerOrderId) return Promise.resolve();
+    return serialized(String(trade.brokerOrderId), () => attachOnFill(userId, trade));
+}
+
+async function attachOnFill(userId: string, trade: Trade): Promise<void> {
     const c = col();
     if (!c) return;
     try {
         const row = (await c.findOne({ userId, orderId: String(trade.brokerOrderId), ...(trade.broker ? { broker: trade.broker } : {}) })) as EntryExit | null;
         if (!row) return;
         if ((await c.deleteOne({ userId, orderId: row.orderId })).deletedCount !== 1) return; // another event claimed it
+        if (row.lot) {
+            if (!lotProtector) throw new Error('no lot protector registered');
+            await lotProtector(userId, trade, row);
+            return;
+        }
         // The row is already claimed, so a transient failure (Mongo/GTT call) would lose the exits for good: retry a few times first.
         let r: Awaited<ReturnType<typeof attachProtection>> | undefined;
         for (let attempt = 1; !r; attempt++) {
@@ -51,6 +88,15 @@ export async function onEntryFill(userId: string, trade: Trade): Promise<void> {
 }
 
 /** A resting entry that ended without a fill (cancelled, rejected, expired at the close): its exits are no longer wanted. */
-export async function onEntryCancelled(userId: string, orderId: string): Promise<void> {
-    try { await col()?.deleteOne({ userId, orderId }); } catch (e) { Log.log('[order] entryExits cleanup failed:', e); }
+export function onEntryCancelled(userId: string, orderId: string): Promise<void> {
+    return serialized(String(orderId), async () => {
+        try { await col()?.deleteOne({ userId, orderId }); } catch (e) { Log.log('[order] entryExits cleanup failed:', e); }
+    });
+}
+
+/** Today's rows of the locked-price entries (startup: their reservations and the pending-order list are rebuilt from them). */
+export async function lotEntriesOfToday(): Promise<EntryExit[]> {
+    const c = col();
+    if (!c) return [];
+    return (await c.find({ day: today(), lot: true }).toArray()) as unknown as EntryExit[];
 }

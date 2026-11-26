@@ -64,7 +64,7 @@ export default function FlashSettingsModal({ show, onHide, defaultTarget, defaul
         <Form.Group className="mb-3">
           <Form.Label className="fw-semibold">How many to buy</Form.Label>
           <Form.Select value={fixed ? 'investmentAmount' : mode} disabled={fixed || user?.investmentModeLocked === true} onChange={(e) => setMode(e.target.value as 'lotCount' | 'investmentAmount')}>
-            <option value="lotCount">1 lot every time (65 for NIFTY)</option>
+            <option value="lotCount">1 lot every time (65 for NIFTY, 20 for SENSEX)</option>
             <option value="investmentAmount">As many lots as my capital allows</option>
           </Form.Select>
           <Form.Text className="text-muted">{fixed ? 'Fixed for Beginner accounts. Advanced accounts can also choose 1 lot every time. ' : ''}{user?.investmentModeLocked ? 'Locked by an admin - contact them to change it. ' : ''}Your daily loss limit still applies in both choices.{mode === 'investmentAmount' && user?.role !== 'admin' ? ' In this mode you can place at most 3 trades a day.' : ''}</Form.Text>

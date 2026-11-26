@@ -15,6 +15,9 @@ import { asyncRouter } from './asyncRouter';
 import { isOpenedToday, openedFilterOf } from '../util/openedToday';
 import { closedTradeRows } from '../util/closedTradeRows';
 import { gateBuy, gateSetTarget } from '../levelGate';
+import { normalizeLevel } from '../levelRules';
+import { NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
+import { wasFlashContractShown } from './priceFeed';
 import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 import { USER_BROKERS_TEXT, isUserBroker } from '../util/brokerName';
 
@@ -112,6 +115,128 @@ router.post('/order/lock-profits', requireAdmin, async function (req, res) {
     } catch (e: any) {
         Log.log('lock-profits failed:', e);
         res.status(500).json({ error: e?.message ?? String(e) });
+    }
+});
+
+// ============================== Orders at the clicked price ==============================
+// The trading page's own buy and square-off: a resting LIMIT order at exactly the price the user saw when clicking (order/lockedEntry.ts,
+// lockedSquareOff.ts). Never a market order: anything missing or unusable is refused. The same level gating, daily trade limit and (in the order
+// process) risk limits as the market routes above. Paths of their own, so a server without them answers 404 instead of buying at market.
+
+const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const optionalPoints = (v: unknown) => v === undefined || v === null || (typeof v === 'number' && Number.isFinite(v) && v >= 0);
+
+// An order-process error as the page shows it (the [NOT_PLACED] / [ORDER_MAY_BE_LIVE] tags are for programs).
+function sendOrderError(res: express.Response, e: any): void {
+    const raw = String(e?.message ?? e);
+    const mayBeLive = raw.includes(ORDER_MAY_BE_LIVE_TAG);
+    const message = raw.split(NOT_PLACED_TAG).join('').split(ORDER_MAY_BE_LIVE_TAG).join('').trim();
+    const error = mayBeLive ? `The order may be live at the broker - check Pending orders and your broker before trying again. ${message}` : message;
+    res.status(raw.includes(NOT_PLACED_TAG) ? 409 : 500).json({ error });
+}
+
+// Whether this server AND its order process take orders at a clicked price. false: the order process predates them (restart pending).
+router.get('/order/locked-capability', requireAuth, async function (_req, res) {
+    try {
+        await orderClient.userOrderState();
+        res.json({ lockedPrice: true });
+    } catch (e: any) {
+        if (/Unknown request type/.test(String(e?.message ?? e))) { res.json({ lockedPrice: false }); return; }
+        res.status(503).json({ error: 'The order service is not reachable' });
+    }
+});
+
+// One buy at a time per user from the check of the daily trade limit to the placed order, so two clicks cannot both pass it.
+const buyChains = new Map<string, Promise<unknown>>();
+function oneAtATime<T>(user: string, fn: () => Promise<T>): Promise<T> {
+    const run = (buyChains.get(user) ?? Promise.resolve()).catch(() => undefined).then(fn);
+    buyChains.set(user, run);
+    run.catch(() => undefined).then(() => { if (buyChains.get(user) === run) buyChains.delete(user); });
+    return run;
+}
+
+router.post('/order/buy-locked', requireAuth, requireCsrfHeader, async function (req: express.Request, res) {
+    try {
+        const { contract, index, right, strikePrice, token, limitPrice, targetPoints, stopLossPoints } = req.body ?? {};
+        const user = resolveUser(req);
+        if (!positive(limitPrice)) { res.status(400).json({ error: 'limitPrice (the price shown when you clicked) must be a positive number' }); return; }
+        if (typeof token !== 'string' || !token) { res.status(400).json({ error: 'token of the priced contract is required' }); return; }
+        if (!optionalPoints(targetPoints) || !optionalPoints(stopLossPoints)) { res.status(400).json({ error: 'targetPoints and stopLossPoints must be numbers >= 0' }); return; }
+        if (contract !== undefined) {
+            try { if (typeof contract !== 'string') throw new Error(); parseCanonicalSymbol(contract); }
+            catch { res.status(400).json({ error: 'contract must look like NIFTY_25550_CE' }); return; }
+        } else if (!(right === 'call' || right === 'put') || !(index === 'NIFTY' || index === 'SENSEX') || !(Number.isInteger(strikePrice) && strikePrice > 0)) {
+            res.status(400).json({ error: "either contract, or right ('call'/'put'), index (NIFTY/SENSEX) and strikePrice" });
+            return;
+        }
+        const buyer = await getUser(user ?? '');
+        const settings = configService.getConfig().settings as any;
+        const gate = gateBuy({
+            role: buyer?.role, level: buyer?.proficiencyLevel, contract: contract as string | undefined,
+            targetPoints: targetPoints ?? undefined, stopLossPoints: stopLossPoints ?? undefined,
+            globalTarget: Number(settings?.targetPoints), globalStopLoss: Number(settings?.stopLossPoints),
+        });
+        if (!gate.allowed) { res.status(403).json({ error: gate.error }); return; }
+        // A Beginner has Flash Trade only: the strike must be the one the server itself put on their button, never one they chose.
+        if (contract === undefined && buyer?.role !== 'admin' && normalizeLevel(buyer?.proficiencyLevel) !== 'advanced' && !wasFlashContractShown(user, index, right, strikePrice)) {
+            res.status(403).json({ error: 'The price on screen has expired - check the new price and click again' });
+            return;
+        }
+        await oneAtATime(user, async () => {
+            if (buyer && buyer.role !== 'admin' && buyer.investmentMode === 'investmentAmount') {
+                const { trades, closedTrades } = await orderClient.stats(user);
+                const started = new Set<string>();
+                const openContracts = new Set<string>();
+                for (const t of [...trades, ...closedTrades]) {
+                    if (t.user === user && isOpenedToday(t.entryTime)) started.add(`${t.broker}|${t.token}|${new Date(t.entryTime).getTime()}`);
+                }
+                for (const t of trades) if (t.user === user) openContracts.add(`${t.broker}|${t.token}`);
+                // A resting buy that has not filled yet will be a trade of today once it does (one per contract; adding to an open one is not new).
+                const resting = new Set<string>();
+                for (const o of (await orderClient.userOrderState()).pending) {
+                    if (o.userId === user && o.action === 'Buy' && !openContracts.has(`${o.broker}|${o.token}`)) resting.add(`${o.broker}|${o.token}`);
+                }
+                if (started.size + resting.size >= MAX_FRONTEND_TRADES_PER_DAY) {
+                    res.status(403).json({ error: `Trade limit reached: at most ${MAX_FRONTEND_TRADES_PER_DAY} trades a day in investment-amount mode (${started.size} today${resting.size ? `, ${resting.size} waiting to fill` : ''})` });
+                    return;
+                }
+            }
+            res.json(await orderClient.manualBuyLocked(user, {
+                ...(contract !== undefined ? { contract } : { index, right, strikePrice }),
+                token, limitPrice, targetPoints: gate.targetPoints, stopLossPoints: gate.stopLossPoints,
+            }));
+        });
+    } catch (e: any) {
+        Log.log(e);
+        sendOrderError(res, e);
+    }
+});
+
+router.post('/order/squareoff-locked', requireAuth, requireCsrfHeader, async function (req: express.Request, res) {
+    try {
+        const { token, broker, price, qty } = req.body ?? {};
+        if (typeof token !== 'string' || !token) { res.status(400).json({ error: 'token is required' }); return; }
+        if (broker !== undefined && !(typeof broker === 'string' && isUserBroker(broker))) { res.status(400).json({ error: `broker must be ${USER_BROKERS_TEXT}` }); return; }
+        if (!positive(price)) { res.status(400).json({ error: 'price (the price shown when you clicked) must be a positive number' }); return; }
+        if (qty !== undefined && !(Number.isInteger(qty) && qty > 0)) { res.status(400).json({ error: 'qty must be a positive integer' }); return; }
+        const out = await orderClient.squareOffLocked(resolveUser(req), { token, broker, price, quantity: qty });
+        if (!out.results.some((r) => r.ok)) { res.status(409).json({ error: out.results.map((r) => `${r.broker}: ${r.error}`).join('; ') }); return; }
+        res.json(out);
+    } catch (e: any) {
+        Log.log(e);
+        sendOrderError(res, e);
+    }
+});
+
+// Cancels one of the caller's own resting orders placed above.
+router.post('/order/cancel', requireAuth, requireCsrfHeader, async function (req: express.Request, res) {
+    try {
+        const { broker, orderId } = req.body ?? {};
+        if (!(typeof broker === 'string' && isUserBroker(broker)) || typeof orderId !== 'string' || !orderId) { res.status(400).json({ error: 'broker and orderId are required' }); return; }
+        res.json(await orderClient.cancelUserOrder(resolveUser(req), { broker, orderId }));
+    } catch (e: any) {
+        Log.log(e);
+        sendOrderError(res, e);
     }
 });
 

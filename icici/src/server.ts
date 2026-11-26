@@ -41,7 +41,8 @@ import usersRoutes from './routes/users';
 import payoutsRoutes from './routes/payouts';
 import brokersRoutes from './routes/brokers';
 import tradingRoutes from './routes/trading';
-import streamsRoutes, { antStreamClients, niftyStreamClients, optionStreamClients, setLastNiftyQuote } from './routes/streams';
+import streamsRoutes, { antStreamClients, niftyStreamClients, optionStreamClients, setLastNiftyQuote, sensexStreamClients, setLastSensexQuote } from './routes/streams';
+import { onPriceTick } from './routes/priceFeed';
 import adminRoutes from './routes/admin';
 import levelsRoutes from './routes/levels';
 import inviteRoutes from './routes/invite';
@@ -176,7 +177,12 @@ async function main() {
 
     // Ticks from `data` (over its socket) feed /niftystream, /optionstream, /ant/stream.
     DataLink.getInstance().onTick((tick) => {
-        if (tick.type === 'nifty') {
+        onPriceTick(tick);
+        if (tick.type === 'sensex') {
+            setLastSensexQuote(tick.quote);
+            const payload = `data: ${JSON.stringify({ sensex: tick.quote })}\n\n`;
+            for (const res of sensexStreamClients) res.write(payload);
+        } else if (tick.type === 'nifty') {
             setLastNiftyQuote(tick.quote);
             const payload = `data: ${JSON.stringify({ nifty: tick.quote })}\n\n`;
             for (const res of niftyStreamClients) res.write(payload);
