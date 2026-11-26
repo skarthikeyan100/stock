@@ -19,7 +19,7 @@
 # ?closed=1 for the closed rows). The admin email also carries the mirrored shares of other users buys (settings.mirrorPercentage); a trade row
 # does not record that, so admin rows are not marked. The strategy tables are not printed in this mode; `all` works the same way.
 # `net` prints today's P&L from the brokers' OWN books (kite, ant, prism, breeze), so orders placed outside the platform (manual) count too. This is the one exception to the manual-orders-are-ignored rule.
-# Table: broker, realized, unrealized, total (2 decimals, equal to the broker's own figures), a TOTAL row, one `users*` row, then the NET line. Each broker uses its OWN convention: kite, ant, prism the DAY-AVERAGE (realized = sold qty x (avg sell - avg buy), unrealized = open qty x (ltp - avg of the open side)), not FIFO); breeze reports the average of its still-open lots, so it is FIFO per contract from its trade book. Kite derives the split from its buy/sell value fields (it reports every pnl as unrealised), ant and prism use their own realized/unrealized fields, breeze (no P&L reported) is derived from its trade book. A proof per broker (total = the broker's own pnl / MtoM / amounts, breeze net quantity and FIFO open-lot average = its positions) or a carried-over contract prints "ERROR: <why>" instead of a number and the NET line then says it excludes that broker. The `users*` row (real frontend users, from /strategyPnl) is NOT added to TOTAL / NET: their trades are already in the brokers' books.
+# Output is ONE number and nothing else (user's rule 2026-11-26): the net, realized + unrealized summed over the brokers (2 decimals). Each broker uses its OWN convention: kite, ant, prism the DAY-AVERAGE (realized = sold qty x (avg sell - avg buy), unrealized = open qty x (ltp - avg of the open side)), not FIFO); breeze reports the average of its still-open lots, so it is FIFO per contract from its trade book. Kite derives the split from its buy/sell value fields (it reports every pnl as unrealised), ant and prism use their own realized/unrealized fields, breeze (no P&L reported) is derived from its trade book. A proof per broker (total = the broker's own pnl / MtoM / amounts, breeze net quantity and FIFO open-lot average = its positions) or a carried-over contract leaves that broker out and the same line then ends with `(EXCLUDES <broker> (<why>), ...)`. If no broker gives a figure the one line is `ERROR: ...` instead. `net all` is accepted and prints the same.
 # Paper is left out by the BROKER of each trade / position, never by a strategy's current config: a real trade of a strategy that is on paper now stays
 # in BY STRATEGY and BY BROKER (their TOTALs agree), a paper trade never shows, and a paper-only strategy with no real trade has no row.
 # `reconcile` is the same-day proof that the platform's books equal the brokers': per broker and per contract, the broker's own realized P&L (the `net` figures:
@@ -41,7 +41,7 @@ status             3 tables (BY STRATEGY, BY BROKER, UNREALIZED BY BROKER AND ST
 status all         the same 3 tables, also trades opened on an earlier day and closed today or still open; includes disabled strategies
 status users       the real users (emails) who trade from the frontend: BY USER, BY BROKER, OPEN POSITIONS, closed TRADES (opened today)
 status users all   the same, also earlier-day trades
-status net         brokers' own books, equal to each broker's figures (realized, unrealized, total per broker, proof-checked), a users* row (not in NET), then NET; manual orders included
+status net         one number: today's net P&L from the brokers' own books (proof-checked), manual orders included; names any broker it excludes
 status reconcile   per broker and contract: the broker's realized P&L against the platform's closedTrades, every contract that differs (> 1.5 rupees x lots) with the likely cause
 status paper       paper-broker strategies (GammaBurst, HighLow on paper): config, paper positions and trades, log lines
 status list        this list
@@ -61,14 +61,13 @@ if [ "$NET" = 1 ]; then
   #   prism  = rpnl / urmtom of its positions (its own fields); proof (totsellamt - totbuyamt + netqty*lp) = rpnl + urmtom.
   #   breeze = reports no P&L (positions pnl is null), so derived from today's trade book with FIFO per contract (its position average_price is the average of the open lots,
   #            verified 2026-11-25; the book lists newest first); proof: net quantity and FIFO open-lot average (0.05) per open contract equal the positions. No broker figure exists to compare the money with.
-  # Any proof that fails, a carried-over contract (earlier-day quantity) or an unreadable book prints "ERROR: <why>" for that broker, never a different number.
-  # The `users` row is the real frontend users (emails) from /strategyPnl; it is NOT part of TOTAL / NET (their trades are inside the brokers' books).
+  # Any proof that fails, a carried-over contract (earlier-day quantity) or an unreadable book leaves that broker out (named with the reason after the number), never a different number.
+  # Output: the number only, no table and no users row.
   K="$(curl -s -m20 "localhost:$PORT/broker/kite/positions")"; A="$(curl -s -m20 "localhost:$PORT/broker/ant/positions")"
   P="$(curl -s -m20 "localhost:$PORT/broker/prism/positions")"; B="$(curl -s -m20 "localhost:$PORT/broker/breeze/positions")"
   BT="$(curl -s -m20 "localhost:$PORT/broker/breeze/trades")"
-  UQ="opened=$OPENED&match=%40"
-  UU="$(curl -s -m10 "localhost:$PORT/strategyPnl?$UQ")"; UD="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1&$UQ")"
-  K="$K" A="$A" P="$P" B="$B" BT="$BT" UU="$UU" UD="$UD" node -e '
+  K="$K" A="$A" P="$P" B="$B" BT="$BT" node -e '
+process.on("uncaughtException",e=>{console.log("ERROR: net not computed: "+e.message);process.exit(1)});
 const parse=s=>{try{return JSON.parse(s)}catch{return null}};
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0};
 const has=v=>v!==null&&v!==undefined&&v!==""&&Number.isFinite(parseFloat(v));
@@ -166,28 +165,14 @@ const breeze=()=>{
   return {name:"breeze",r,u};
 };
 const brokers=[kite(),ant(),prism(),breeze()];
-// users row: real frontend users (emails), same source as `status users`. Realized from the user rows, unrealized from the one ?detail=1 snapshot.
-const users=()=>{
-  const uu=parse(process.env.UU),ud=parse(process.env.UD);
-  if(!Array.isArray(uu)||!Array.isArray(ud))return {name:"users",err:"cannot be computed: /strategyPnl unavailable"};
-  const real=ud.filter(d=>d.broker!=="paper");
-  return {name:"users",r:sum(uu,x=>num(x.realized)),u:sum(real,d=>num(d.unrealized))};
-};
 const f=n=>(n<0?"-":"")+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
-const pad=(t,w)=>String(t).padStart(w);
 let R=0,U=0;const bad=[];
-console.log("BROKER   "+pad("REALIZED",14)+pad("UNREALIZED",14)+pad("TOTAL",14));
 for(const x of brokers){
-  if(x.r===undefined){console.log(x.name.padEnd(8)+"  ERROR: "+x.err);bad.push(x.name+" ("+x.err+")");continue}
+  if(x.r===undefined){bad.push(x.name+" ("+x.err+")");continue}
   R+=x.r;U+=x.u;
-  console.log(x.name.padEnd(8)+"  "+pad(f(x.r),14)+pad(f(x.u),14)+pad(f(x.r+x.u),14));
 }
-console.log("TOTAL   "+"  "+pad(f(R),14)+pad(f(U),14)+pad(f(R+U),14));
-const us=users();
-console.log(us.r===undefined?"users*    ERROR: "+us.err:"users*    "+pad(f(us.r),14)+pad(f(us.u),14)+pad(f(us.r+us.u),14));
-console.log("* users = real frontend users (emails), trades opened "+(process.env.OPENED==="all"?"today or earlier":"today")+"; already inside the broker books above, NOT added to TOTAL / NET.");
-console.log("");
-console.log("NET "+f(R+U)+(bad.length?"  (EXCLUDES "+bad.join(", ")+")":""));'
+if(bad.length===brokers.length)console.log("ERROR: net not computed: "+bad.join(", "));
+else console.log(f(R+U)+(bad.length?"  (EXCLUDES "+bad.join(", ")+")":""));'
   exit 0
 fi
 HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
