@@ -5,6 +5,8 @@
 # Which strategies: ONLY those enabled in config.yml (expanded per broker the way the platform names instances: <userId>, <userId>-ANT,
 # <userId>-Breeze), shown with zeros until they trade, so a newly enabled strategy appears with no change here. Trades of a disabled
 # strategy are left out of every table (user's rule, 2026-11-13); the by-broker table is filtered the same way (?match=).
+# If config.yml cannot be read, a WARNING says the enabled-strategy filter could not be applied: every strategy with trades is listed, disabled
+# ones included, still without real users (emails) or paper trades, and no zero rows.
 # RESTING SELL is what rests NOW for that row's user + broker + contract: the order side's pending sell orders in Mongo (pendingLimitOrders,
 # pendingAntLimitOrders, pendingBreezeLimitOrders, pendingPrismLimitOrders; read only). A filled or cancelled order is not there, a re-priced one
 # is there at its new price. The price is the one stored on the pending order; an order tracked without it (placed by an older process) takes the
@@ -292,26 +294,27 @@ try{
   const isPaperOnly=c=>Array.isArray(c.brokers)&&c.brokers.length>0&&c.brokers.every(b=>b==="paper");
   enabledNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true)).map(c=>c.userId||c.type));
   zeroNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true&&!isPaperOnly(c))).map(c=>c.userId||c.type));
-}catch(e){console.log("(could not read the enabled strategies from config.yml: "+e.message+")")}
+}catch(e){
+  enabledNames=null;zeroNames=new Set();
+  console.log("WARNING: the enabled-strategy filter could not be applied (config.yml not read: "+e.message.split("\n")[0]+"): disabled strategies with trades are not filtered out, and enabled strategies without trades are not shown");
+}
 // status (today): enabled strategies only (rule of 2026-11-13). status all: every strategy with trades, enabled or disabled/latched
-// (rule of 2026-11-17), never the real users (their rows contain an @ sign).
+// (rule of 2026-11-17). Neither shows the real users (their rows contain an @ sign), also when config.yml cannot be read.
 const allMode=process.env.OPENED==="all";
 const isUserName=n=>n.includes("@");
-// The open positions every table must be built from: the same strategies as BY STRATEGY (enabled only; with `all` every non-user, non-paper one).
-const keepDetail=s=>allMode?!isUserName(s):(!enabledNames||enabledNames.has(s));
+// everyStrategy: no enabled filter (`all`, or config.yml unreadable): every non-user strategy.
+const everyStrategy=allMode||!enabledNames;
+// The open positions every table must be built from: the same strategies as BY STRATEGY.
+const keepDetail=s=>everyStrategy?!isUserName(s):enabledNames.has(s);
 const tableDetail=detailSnap?detailSnap.filter(d=>keepDetail(d.strategy)):null;
-if(allMode){
-  for(let i=byStrategy.length-1;i>=0;i--)if(isUserName(byStrategy[i].strategy))byStrategy.splice(i,1);
-}else if(enabledNames){
-  for(let i=byStrategy.length-1;i>=0;i--)if(!enabledNames.has(byStrategy[i].strategy))byStrategy.splice(i,1);
-}
+for(let i=byStrategy.length-1;i>=0;i--)if(!keepDetail(byStrategy[i].strategy))byStrategy.splice(i,1);
 // Both modes: a zero row for each enabled, not paper-only strategy with no row yet (zeroNames is empty when config.yml could not be read).
 const have=new Set(byStrategy.map(r=>r.strategy));
 for(const name of zeroNames)if(!have.has(name))byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0});
 byStrategy.sort((a,b)=>a.strategy.localeCompare(b.strategy));
 // No row at all: say only what is known. Plain status hides disabled strategies, so it must not claim there were no trades at all.
 if(!byStrategy.length){
-  const none=allMode?"no real strategy trade (closed or still open)":"no real trade opened today"+(enabledNames?" by an enabled strategy":"");
+  const none=allMode?"no real strategy trade (closed or still open)":(enabledNames?"no real trade opened today by an enabled strategy":"no real strategy trade opened today");
   if(!enabledNames)console.log(none+"; which strategies are enabled is unknown");
   else if(enabledNames.size)console.log("only paper strategies are enabled (see `status paper`); "+none);
   else console.log("no strategy enabled; "+none+(allMode?"":" (`status all` also lists disabled strategies)"));
@@ -320,7 +323,7 @@ if(!byStrategy.length){
 console.log(process.env.OPENED==="all"?"(all trades: also those opened on an earlier day)":"(trades opened today only; `all` adds earlier-day trades closed or still open today)");
 table("BY STRATEGY",byStrategy);
 const esc=n=>n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
-const matchQ=allMode?"&match="+encodeURIComponent("^[^@]+$"):(enabledNames?"&match="+encodeURIComponent("^("+[...enabledNames].map(esc).join("|")+")$"):"");
+const matchQ="&match="+encodeURIComponent(everyStrategy?"^[^@]+$":"^("+[...enabledNames].map(esc).join("|")+")$");
 const byBroker=parse(require("child_process").execFileSync("curl",["-s","-m10","localhost:"+process.env.PORT+"/strategyPnl?by=broker&opened="+process.env.OPENED+matchQ]).toString());
 if(byBroker){for(let i=byBroker.length-1;i>=0;i--)if(byBroker[i].strategy==="paper"||byBroker[i].broker==="paper")byBroker.splice(i,1)} // paper is its own broker row on a server that predates the real-only route
 if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy,tableDetail);
