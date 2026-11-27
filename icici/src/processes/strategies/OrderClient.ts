@@ -488,7 +488,7 @@ class OrderClient {
     }
 
     // Limit-sells every open long on `broker` (all brokers when omitted) at its current price to lock the open P&L; see orderProcess.ts's lockProfits.
-    async lockProfits(payload: { broker?: string; reprice?: boolean } = {}): Promise<any> {
+    async lockProfits(payload: { broker?: string; reprice?: boolean; strategiesOnly?: boolean } = {}): Promise<any> {
         return this.call('lockProfits', 'lock-profits', payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 

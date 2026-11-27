@@ -4,6 +4,7 @@ import configService from '../../prism/ConfigService';
 import { isWithinTradingWindow } from '../../util/marketHours';
 import { isOpenedToday } from '../../util/openedToday';
 import { localDayKey } from '../../strategy/dayKey';
+import { isRealUser } from '../../util/realUser';
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import { disableAllAndLockProfits } from '../lockAllProfits';
 import OrderClient from './OrderClient';
@@ -13,7 +14,9 @@ import type { RestingSell } from '../../strategy/restingCover';
 
 // settings.combinedMaxProfit (rupees, optional, absent = off): when the COMBINED day P&L of every strategy on every real broker (realized + open positions at
 // the last tick price, markPrice.ts, trades opened today; the paper broker is not counted) reaches it, the lock-profits action runs once - every strategy is disabled in
-// config.yml and every open long is limit-sold at its live price (disableAllAndLockProfits, the same code as POST /order/lock-profits).
+// config.yml and every open long of a strategy is limit-sold at its live price (disableAllAndLockProfits, the same code as POST /order/lock-profits).
+// Real users' trades (util/realUser.ts, the admin's mirrored shares included) are no part of it: neither their realized nor their open P&L is
+// counted, and the lock does not sell their positions or cancel their resting orders.
 // One trip per day, durable in Mongo (strategyLatches, ownerType 'CombinedMaxProfit'): re-enabling strategies afterwards does not trip it again
 // the same day. A trip whose lock failed (`locked` false) is retried every cycle.
 export const COMBINED_MAX_PROFIT_OWNER = 'CombinedMaxProfit';
@@ -30,14 +33,14 @@ export function combinedMaxProfit(settings?: Record<string, any> | null): number
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-const countedOpen = (stats: { trades: any[] }) => stats.trades.filter((t) => String(t.broker || 'kite') !== 'paper' && isOpenedToday(t.entryTime)
+const counted = (t: any) => !isRealUser(t.user) && String(t.broker || 'kite') !== 'paper' && isOpenedToday(t.entryTime);
+const countedOpen = (stats: { trades: any[] }) => stats.trades.filter((t) => counted(t)
     && num(t.quantity) > 0 && Number.isFinite(Number(t.price)) && Number(t.price) > 0);
 
 // `resting` (the contracts' resting sells) values the quantity they cover at no more than their price (restingMarks.ts).
 export async function combinedPnl(stats: { trades: any[]; closedTrades: any[] }, resting?: Map<string, RestingSell[]>): Promise<number> {
-    const mine = (t: any) => String(t.broker || 'kite') !== 'paper' && isOpenedToday(t.entryTime);
     const open = countedOpen(stats);
-    const realized = stats.closedTrades.filter(mine).reduce((s, t) => s + num(t.realizedPnL), 0) + open.reduce((s, t) => s + num(t.realizedPnL), 0);
+    const realized = stats.closedTrades.filter(counted).reduce((s, t) => s + num(t.realizedPnL), 0) + open.reduce((s, t) => s + num(t.realizedPnL), 0);
     // Tick price first; a throttled live quote only for a row no strategy here has a tick for (markPrice.ts).
     const marks = new Map<any, number>();
     for (const t of open) marks.set(t, await markPrice(t));
@@ -78,7 +81,7 @@ async function runOnce(orderClient: OrderClient): Promise<void> {
             await col.updateOne(latchKey(), { $set: { tripped: true, locked: false, pnl: total, cap, updatedAt: new Date() } }, { upsert: true }); // durable before anything is sold
             Log.log(`[CombinedMaxProfit] TRIPPED - combined total=${Math.round(total)} threshold=${cap} - disabling every strategy and locking profits`);
         } else if (latch.locked) return;
-        const res = await disableAllAndLockProfits(orderClient);
+        const res = await disableAllAndLockProfits(orderClient, { strategiesOnly: true });
         const col = Mongo.getInstance()?.db.collection('strategyLatches');
         await col?.updateOne(trippedLatchFilter(), { $set: { locked: true, updatedAt: new Date() } });
         Log.log(`[CombinedMaxProfit] lock-profits done: disabled ${res.disabledStrategies.length} strategies, locked P&L ${Math.round(num(res.lock?.totalLockedPnl))}`);

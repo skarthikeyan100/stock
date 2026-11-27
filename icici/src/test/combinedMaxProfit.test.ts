@@ -1,5 +1,5 @@
 /**
- * settings.combinedMaxProfit: combined P&L over all strategies/brokers (paper excluded), the setting reader and the config validation.
+ * settings.combinedMaxProfit: combined P&L over all strategies/brokers (paper and real users excluded), the setting reader and the config validation.
  * Run: npx tsc, then: node ./dist/test/combinedMaxProfit.test.js
  */
 import { combinedPnl, combinedMaxProfit } from '../processes/strategies/combinedMaxProfit';
@@ -19,9 +19,10 @@ function assert(condition: boolean, message: string) {
         { user: 'S2', broker: 'ant', tsym: 'B', token: '2', price: 100, quantity: 10, },  // -100
         { user: 'S3', broker: 'paper', tsym: 'A', token: '1', price: 100, quantity: 10 }, // not counted
         { user: 'S4', broker: 'kite', tsym: 'D', token: '4', price: 100, quantity: 10 },                       // tick at cost: 0
+        { user: 'someone@example.com', broker: 'kite', tsym: 'A', token: '1', price: 100, quantity: 10, realizedPnL: 777 }, // a user: not counted
     ];
-    const closed = [{ user: 'S1', broker: 'kite', tsym: 'C', realizedPnL: 300 }, { user: 'S3', broker: 'paper', tsym: 'C', realizedPnL: 999 }];
-    assert(Math.round(await combinedPnl({ trades: open, closedTrades: closed })) === 450, 'combined = 50 + 200 - 100 + 300, paper left out');
+    const closed = [{ user: 'S1', broker: 'kite', tsym: 'C', realizedPnL: 300 }, { user: 'S3', broker: 'paper', tsym: 'C', realizedPnL: 999 }, { user: 'someone@example.com', broker: 'ant', tsym: 'C', realizedPnL: 888 }];
+    assert(Math.round(await combinedPnl({ trades: open, closedTrades: closed })) === 450, 'combined = 50 + 200 - 100 + 300, paper and the user left out');
     assert(combinedMaxProfit({ combinedMaxProfit: 20000 }) === 20000, 'reads a positive number');
     assert(combinedMaxProfit({}) === 0 && combinedMaxProfit({ combinedMaxProfit: 0 }) === 0 && combinedMaxProfit({ combinedMaxProfit: '5%' }) === 0, 'absent / 0 / non-number = off');
     assert(validateNumericRanges('settings', { combinedMaxProfit: 20000 }).length === 0, 'valid value accepted');

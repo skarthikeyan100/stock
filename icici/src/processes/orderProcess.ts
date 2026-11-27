@@ -50,6 +50,7 @@ import { parseBrokerTime } from './order/timedFills';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, forgetRestingMirror, type MirrorLeg, type MirrorHook } from './order/mirror';
+import { isRealUser } from '../util/realUser';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
 import { onPaperTick, paperBookSnapshot } from './order/paperExecutor';
@@ -582,7 +583,8 @@ async function forceCloseTrade(trade: Trade): Promise<boolean> {
 // quantity (rows of a chunked position share a tsym - cancelling per row would cancel the sell just placed for the row
 // before it), (3) price = the broker's live last price for the contract (read from its positions at call time) rounded UP to the tick, never down, so the lock cannot be worse
 // than the P&L it was computed from. A repeat call for a still-open lock is skipped (re-pricing at a lower LTP would give
-// back locked profit) unless `reprice` is set.
+// back locked profit) unless `reprice` is set. `strategiesOnly` (the combinedMaxProfit lock): a real user's (util/realUser.ts) resting buys, resting
+// sells and positions are not touched; without it (POST /order/lock-profits, the trader's socket call) every owner is locked.
 const LOCK_PROFITS_TICK = 0.05;
 const LOCK_PROFITS_COOLDOWN_MS = 10 * 60_000;
 const lockProfitsPlaced = new Map<string, { limitPrice: number; at: number }>();
@@ -638,14 +640,14 @@ interface LockProfitsResult {
 // positions are recorded as locked and are reported as skipped, instead of being sold twice (the already-locked mark is only
 // written after a sell is placed).
 let lockProfitsInFlight: Promise<LockProfitsResult> | null = null;
-async function lockProfits(brokerArg: string | undefined, reprice: boolean): Promise<LockProfitsResult> {
+async function lockProfits(brokerArg: string | undefined, reprice: boolean, strategiesOnly: boolean): Promise<LockProfitsResult> {
     while (lockProfitsInFlight) await lockProfitsInFlight.catch(() => undefined);
-    const run = lockProfitsOnce(brokerArg, reprice).finally(() => { if (lockProfitsInFlight === run) lockProfitsInFlight = null; });
+    const run = lockProfitsOnce(brokerArg, reprice, strategiesOnly).finally(() => { if (lockProfitsInFlight === run) lockProfitsInFlight = null; });
     lockProfitsInFlight = run;
     return run;
 }
 
-async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean): Promise<LockProfitsResult> {
+async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean, strategiesOnly: boolean): Promise<LockProfitsResult> {
     // Before anything is cancelled or sold: a disabled strategy takes no action at all, so with every strategy disabled nothing
     // can buy behind the lock. The caller disables them in config.yml first; re-read it here so the lock never runs on a stale copy.
     configService.reloadNow();
@@ -659,11 +661,12 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
         if (!TRACKER_BROKERS.includes(b as any)) throw new Error(`lockProfits: unsupported broker '${b}'`);
     }
     const result: LockProfitsResult = { brokers, positions: [], cancelledBuys: [], totalLockedPnl: 0 };
+    const leftAlone = (user: string) => strategiesOnly && isRealUser(user);
 
     // (1) Resting buys first. A buy that filled before its cancel landed is a new position: its fill is booked by the poller,
     // so it is reported and a repeat call locks it.
     for (const b of brokers) {
-        for (const order of TRACKERS[b as keyof typeof TRACKERS].all().filter((o) => o.action === 'Buy')) {
+        for (const order of TRACKERS[b as keyof typeof TRACKERS].all().filter((o) => o.action === 'Buy' && !leftAlone(o.userId))) {
             const entry: LockProfitsResult['cancelledBuys'][number] = { broker: b, user: order.userId, tsym: order.tradingSymbol, orderId: order.orderId };
             try {
                 await getBrokerExecutor(order.userId, b).cancelOrder(order.orderId, order.exchange);
@@ -678,7 +681,7 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
     // (2)+(3) Group by owning user + broker + contract. Rows are read AFTER the buy cancels (a fill booked meanwhile is included).
     const groups = new Map<string, Trade[]>();
     for (const t of bookkeeping.trades) {
-        if (!(t.quantity > 0)) continue;
+        if (!(t.quantity > 0) || leftAlone(t.user)) continue;
         const b = normalizeBrokerName(t.broker || 'kite'); // a row with no broker is a Kite row everywhere else
         if (!brokers.includes(b)) continue;
         const key = `${t.user}|${b}|${t.tsym}`;
@@ -744,7 +747,7 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
         }
     }
     result.totalLockedPnl = Math.round(result.totalLockedPnl * 100) / 100;
-    Log.log(`[order] lockProfits: ${result.positions.filter((p) => p.status === 'locked').length}/${result.positions.length} position(s) locked on ${brokers.join(',') || 'no broker'}, total locked P&L ${result.totalLockedPnl}`);
+    Log.log(`[order] lockProfits: ${result.positions.filter((p) => p.status === 'locked').length}/${result.positions.length} position(s) locked on ${brokers.join(',') || 'no broker'}, total locked P&L ${result.totalLockedPnl}${strategiesOnly ? ' (strategies only: users\' positions and orders left alone)' : ''}`);
     return result;
 }
 
@@ -1023,8 +1026,8 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'lockProfits': {
-                const { broker, reprice } = (req.payload ?? {}) as { broker?: string; reprice?: boolean };
-                const result = await lockProfits(broker, reprice === true);
+                const { broker, reprice, strategiesOnly } = (req.payload ?? {}) as { broker?: string; reprice?: boolean; strategiesOnly?: boolean };
+                const result = await lockProfits(broker, reprice === true, strategiesOnly === true);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
