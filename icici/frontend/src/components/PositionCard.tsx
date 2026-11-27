@@ -23,10 +23,9 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
   const hasStopLoss = !!trade.stopLossPrice;
   const hasTargetSet = hasTarget && hasStopLoss;
   const [busy, setBusy] = useState(false);
-  // The inputs are open while nothing is set yet, or after "Edit". An ANT bracket's levels live at the broker and cannot be changed.
+  // The inputs are open while nothing is set yet, or after "Edit".
   const [editing, setEditing] = useState(false);
-  const fixedAtBroker = trade.broker === 'ant' && !!trade.antOrderNo;
-  const showInputs = !fixedAtBroker && (editing || (!hasTarget && !hasStopLoss));
+  const showInputs = editing || (!hasTarget && !hasStopLoss);
 
   // Prefilled with the current distance from the average price; a level on the other side of it is left empty (and stays unless replaced).
   const asPoints = (points: number) => (points > 0 ? String(Math.round(points * 100) / 100) : '');
@@ -59,8 +58,7 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
   const broker = trade.broker ?? 'kite';
   // This position's pending limit sell(s), and the live price a limit square-off would be placed at.
   const resting = !closed && locked ? locked.pending.filter((o) => o.action === 'Sell' && o.broker === broker && o.token === String(trade.token) && o.tsym === trade.tsym) : [];
-  const bracket = broker === 'ant' && !!trade.antOrderNo;
-  const canLimit = !!locked && !bracket && ['kite', 'ant', 'breeze'].includes(broker);
+  const canLimit = !!locked && ['kite', 'ant', 'breeze'].includes(broker);
   const sellPrice = !closed && canLimit ? locked!.positionPrice(trade) : null;
 
   // A limit sell at the live price, which is not shown. There is no selling at market: without a price to use, the button is disabled.
@@ -170,7 +168,7 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
                   Stop Loss: <span className="fw-bold text-danger">{hasStopLoss ? <>&#8377;{trade.stopLossPrice?.toFixed(2)}</> : 'not set'}</span>
                   {demo && hasTargetSet && <DemoHelpTip text="The position auto-squares-off the moment a live price reaches the Target or Stop Loss level - no action needed from you." />}
                 </small>
-                {!showInputs && !fixedAtBroker && (
+                {!showInputs && (
                   <Button variant="outline-primary" size="sm" className="ms-auto" onClick={startEditing}>
                     Edit
                   </Button>

@@ -27,8 +27,6 @@ export interface Trade {
   pendingStopLossPoints?: number;
   // Which broker holds this position (an account trading on several brokers has one row per broker for the same contract).
   broker?: string;
-  // Set on an ANT bracket position: its exit lives at the broker, so it cannot be sold at a chosen price.
-  antOrderNo?: string;
   // The buy orders already counted in this open position: their "Pending" card is dropped.
   buyOrderIds?: string[];
 }

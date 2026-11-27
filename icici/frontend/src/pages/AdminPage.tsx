@@ -1220,7 +1220,7 @@ export default function AdminPage() {
                           <Form.Check
                             type="switch"
                             id={`useGTT-${u.email}`}
-                            title="Broker GTT bracket at entry vs. in-app target/SL monitoring"
+                            title="Broker GTT at entry vs. in-app target/SL monitoring (ANT manual buys are always watched in-app)"
                             checked={editing[u.email].useGTT}
                             onChange={e => updateEditingField(u.email, { useGTT: e.target.checked })}
                           />

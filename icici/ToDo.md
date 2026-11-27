@@ -5,6 +5,7 @@ This file is a snapshot of pending/in-progress work, kept current by hand (there
 
 ## Open decisions / unfinished work
 
+- **No ANT bracket on manual buys (2026-11-27, item 184 in `open-review-items.md`; NOT live until the trading process restarts):** the platform watches target / stop itself; no stop rests at AliceBlue. Not live-verified.
 - **Trading page: one card after Buy, editable target / stop (2026-11-27, item 183 in `open-review-items.md`; the page is deployed, the server half applies when the trading process restarts, held by the orchestrator until after 15:35):** not seen in a browser, not live-verified. First-live check: one card after a buy; Edit a stop, confirm it (and a Kite GTT) changes.
 - **Trading page declutter (2026-11-27, item 181 in `open-review-items.md`):** success panels, button prices, Pending orders card, re-price, market selling and the square-off confirmation removed; not seen in a browser, not live-verified. Open: an ANT bracket position cannot be exited from the page.
 

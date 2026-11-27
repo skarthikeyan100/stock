@@ -186,23 +186,38 @@ async function sizingQuote(exch: string, token: string): Promise<{ ltp: number; 
 async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number, lotSize?: string | number): Promise<Trade> {
     const sized = req.quantity != null ? undefined : await sizingQuote(exch, token);
     const quantity = sizeManualBuyOrRefuse(req, tsym, sized?.ltp, Number(lotSize) || undefined);
-    // The per-trade loss budget is an exit, not a size cap: the stop (the bracket's, or the in-app watch's) is held to budget / quantity per share.
+    // The per-trade loss budget is an exit, not a size cap: the in-app watch's stop is held to budget / quantity per share.
     const stop = sized && sized.ltp > 0 ? bookkeeping.lossBudgetStopPoints(req.userId, 'ant', tsym, quantity, sized.ltp, stopLossPoints, req.quantity) ?? stopLossPoints : stopLossPoints;
     req.mirror?.({ userId: req.userId, broker: 'ant', tsym, token, exchange: exch, quantity,
         place: (adminId, qty) => enterManualPositionChunked(adminId, tsym, token, qty, exch, targetPoints, stop) });
     return enterManualPositionChunked(req.userId, tsym, token, quantity, exch, targetPoints, stop, sized);
 }
 
-// A manual ANT buy above one freeze order is placed as several orders (chunkedOrder.manualBuyChunked). A split position is NOT protected by
-// one broker bracket per chunk: squareOffOnAnt exits through the single antOrderNo kept on the merged row, so the other brackets would be
-// left live; instead the chunks are plain entries and the in-app exit monitor owns target/stop on the whole position (sold in chunks).
+// A manual ANT buy is never a broker bracket, whatever `useGTT` says (2026-11-27, user decision): a bracket's target / stop cannot be changed and
+// its position cannot be sold at a chosen price, so the trading page could not treat it like any other. The entries are plain orders and the in-app
+// exit monitor owns target / stop on the whole position (sold in freeze-sized chunks). Above one freeze order the buy is placed as several orders
+// (chunkedOrder.manualBuyChunked). Strategy buys call enterPosition themselves and are not affected.
 function enterManualPositionChunked(userId: string, tsym: string, token: string, quantity: number, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number, sized?: { ltp: number; atMs: number }): Promise<Trade> {
     return manualBuyChunked({
         label: 'manualBuyChunked', userId, tradingSymbol: tsym, exchange: exch, quantity,
-        placeOne: (qty, inAppExit) => enterPosition(userId, tsym, token, qty, exch, targetPoints, stopLossPoints, 'bracket', sized, undefined, inAppExit),
+        placeOne: async (qty) => {
+            const fill = await enterPosition(userId, tsym, token, qty, exch, targetPoints, stopLossPoints, 'bracket', sized, undefined, true);
+            holdLatestLevels(userId, tsym, token, exch, fill);
+            return fill;
+        },
         onBooked: () => exitMonitor.watchAggregate(userId, tsym, token, exch, 'ant'),
         afterBook: () => { bookkeeping.tightenStopToLossBudget(userId, 'ant', tsym); },
     });
+}
+
+// The latest buy's target / stop govern the position (as for a buy at a clicked price): they are put on the open row, which is what the page
+// shows and edits, and the exit monitor is pointed at that row instead of the single fill.
+function holdLatestLevels(userId: string, tsym: string, token: string, exch: 'NFO' | 'BFO', fill: Trade): void {
+    const row = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && t.broker === 'ant');
+    if (!row) return;
+    if (fill.targetPrice != null) { row.targetPrice = fill.targetPrice; row.targetPoints = fill.targetPoints; }
+    if (fill.stopLossPrice != null) row.stopLossPrice = fill.stopLossPrice;
+    exitMonitor.watchAggregate(userId, tsym, token, exch, 'ant');
 }
 
 // An unsized buy needs a price to size from. Without one, refuse: the entry also needs a limit price,
