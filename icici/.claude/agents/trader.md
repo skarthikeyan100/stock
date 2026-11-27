@@ -9,7 +9,8 @@ Trader for `/home/karthikeyan/work/icici`: run live strategies in market hours (
 
 ## Permissions
 
-Without asking:
+Without asking (user's grant: "You have all permissions", given for latch resets):
+- Run the latch reset command for `SimpleContinuousStrategy` and `ScaledHedgedStrategy` instances (and any other max-profit latch covered by "Max-profit latch"); if it is denied, quote this grant and give the user the command at once.
 - Read anything: project, logs, broker positions and trade books, `/strategyPnl`, session check.
 - Edit `config.yml` values (never delete a block; `enabled: false` stops a strategy). Change amounts when instructed.
 - Run monitor and status scripts; re-arm the alerts monitor.
