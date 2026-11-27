@@ -301,7 +301,14 @@ router.post('/order/settarget', requireAuth, requireCsrfHeader, async function (
         const caller = user ? await getUser(user) : null;
         const gate = gateSetTarget({ role: caller?.role, level: caller?.proficiencyLevel, targetPoints, stopLossPoints });
         if (!gate.allowed) { res.status(403).json({ error: gate.error }); return; }
-        await orderClient.setTargetStopLoss(user, token, targetPoints, stopLossPoints, broker);
+        try {
+            await orderClient.setTargetStopLoss(user, token, targetPoints, stopLossPoints, broker);
+        } catch (e: any) {
+            // Why the levels were not changed is shown to the user (a level already crossed, a refused GTT change).
+            Log.log(e);
+            res.status(409).json({ error: String(e?.message ?? e).replace(/^setTargetStopLoss:\s*/, '') });
+            return;
+        }
         res.sendStatus(200);
     } catch (e) {
         Log.log(e);

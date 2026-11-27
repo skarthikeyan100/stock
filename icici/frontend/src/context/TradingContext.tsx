@@ -29,6 +29,8 @@ export interface Trade {
   broker?: string;
   // Set on an ANT bracket position: its exit lives at the broker, so it cannot be sold at a chosen price.
   antOrderNo?: string;
+  // The buy orders already counted in this open position: their "Pending" card is dropped.
+  buyOrderIds?: string[];
 }
 
 interface TradingState {
@@ -219,6 +221,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number, broker?: string): Promise<boolean> => {
+    setOrderError(null);
     try {
       const response = await apiPost('/order/settarget', { token, targetPoints, stopLossPoints, ...(broker ? { broker } : {}) });
       if (!response.ok) {

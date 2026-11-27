@@ -22,6 +22,7 @@ import { exchangeForTsym } from '../../util/underlyings';
 import { loadOrderOwners, recordOrderOwner } from './orderOwners';
 import { ownerSellCap } from './neverShortClass';
 import Mongo from '../../tools/mongo';
+import { lossBudgetStopPrice } from '../../levelLimits';
 import { registerEntryExit } from './entryExits';
 import { manualBuyChunked, squareOffAutoChunked, defaultFreezeQty } from './chunkedOrder';
 import { releaseGttsForSell, watchInApp, withGttSellLock, acquireGttSellLock, markKiteSelling, kiteSellBusy, modifyPositionGtts } from './gttRelease';
@@ -419,6 +420,20 @@ async function buyOneContractOnKite(userId: string, tradingSymbol: string, commo
     });
 }
 
+// A restart restores a position's target / stop from its newest Buy document (bookkeeping.restoreOpenTradesForTsym): an edit is stored there.
+function persistExitLevels(trade: Trade): void {
+    const db = Mongo.getInstance()?.db;
+    const broker = trade.broker ?? 'kite';
+    if (!db || !trade.tsym || broker === 'paper') return;
+    const fields = { ...(trade.targetPrice != null ? { targetPrice: trade.targetPrice } : {}), ...(trade.stopLossPrice != null ? { stopLossPrice: trade.stopLossPrice } : {}) };
+    const filter = { tsym: trade.tsym, user: trade.user, action: 'Buy', ...(broker === 'kite' ? { $or: [{ broker: 'kite' }, { broker: { $exists: false } }] } : { broker }) };
+    const attempt = async (): Promise<boolean> => !!(await db.collection('Trade').findOneAndUpdate(filter, { $set: fields }, { sort: { entryTime: -1 } }))?.value;
+    attempt()
+        .then((hit) => hit ? true : new Promise<boolean>((res) => setTimeout(() => attempt().then(res, () => res(false)), 2500)))
+        .then((hit) => { if (!hit) Log.log(`[order] ALERT: could not store the target / stop of ${trade.tsym} (${trade.user}) on its Buy document - a restart would restore the previous levels`); })
+        .catch((e) => Log.log(`[order] ALERT: storing the target / stop of ${trade.tsym} (${trade.user}) failed - a restart would restore the previous levels:`, e));
+}
+
 // POST /prism/settarget's Kite path: update bookkeeping's local target/SL
 // fields and, if this trade has a live GTT (gttTriggerId), modify it in place.
 export async function setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number, broker?: string): Promise<void> {
@@ -442,24 +457,51 @@ async function setTargetStopLossOnLeg(trade: Trade, targetPoints: number, stopLo
     if (!hasTarget && !hasStop) throw new Error('setTargetStopLoss: targetPoints and/or stopLossPoints must be a positive number');
     // An ANT bracket/cover keeps the levels it was placed with at the broker and cannot be modified here: refuse instead of showing levels nothing enforces.
     if (trade.broker === 'ant' && trade.antOrderNo) throw new Error(`setTargetStopLoss: ${trade.tsym} is an ANT bracket/cover position - its target/stop live at the broker and cannot be changed here`);
-    if (hasTarget) {
-        trade.targetPrice = trade.price + targetPoints;
+    const target = hasTarget ? trade.price + targetPoints : trade.targetPrice;
+    let stop = hasStop ? trade.price - stopLossPoints : trade.stopLossPrice;
+    // A frontend position's stop is never looser than the per-trade loss budget (as after a buy: bookkeeping.tightenStopToLossBudget).
+    const budget = trade.strategy ? undefined : bookkeeping.lossBudgetFor(trade.user);
+    if (hasStop && budget !== undefined) {
+        const need = lossBudgetStopPrice(budget, trade.quantity, trade.price);
+        if (need !== undefined && stop! < need - 1e-9) {
+            Log.log(`[order] loss budget ${Math.round(budget)}: the stop ${stop} asked for ${trade.tsym} (${trade.user}) is held at ${need}`);
+            stop = need;
+        }
+    }
+    // A side sent with its current level (within half a tick: the page sends both, in points rounded to paise) is not a change.
+    const differs = (next: number, now: number | undefined) => now == null || Math.abs(next - now) > 0.025;
+    const targetChanged = hasTarget && differs(target!, trade.targetPrice);
+    const stopChanged = hasStop && differs(stop!, trade.stopLossPrice);
+    const last = Number(trade.lastTradePrice);
+    if (last > 0 && stopChanged && stop! >= last) throw new Error(`setTargetStopLoss: ${trade.tsym}: the stop ${stop!.toFixed(2)} is at or above the live price ${last.toFixed(2)} - it would sell at once, not changed`);
+    if (last > 0 && targetChanged && target! <= last) throw new Error(`setTargetStopLoss: ${trade.tsym}: the target ${target!.toFixed(2)} is at or below the live price ${last.toFixed(2)} - it would sell at once, not changed`);
+    const before = { targetPrice: trade.targetPrice, targetPoints: trade.targetPoints, stopLossPrice: trade.stopLossPrice };
+    if (targetChanged) {
+        trade.targetPrice = target;
         trade.targetPoints = targetPoints;
     }
-    if (hasStop) trade.stopLossPrice = trade.price - stopLossPoints;
+    if (stopChanged) trade.stopLossPrice = stop;
 
     // A GTT always carries both legs, so both prices exist whenever one is attached. A merged position holds several: modifyPositionGtts sizes them
     // so that together they never exceed what is held.
-    if (trade.gttTriggerId && trade.targetPrice !== undefined && trade.stopLossPrice !== undefined) {
-        const target = trade.targetPrice, stop = trade.stopLossPrice;
-        await withGttSellLock(trade.user, trade.tsym, () => modifyPositionGtts(trade.user, trade, target, stop));
+    if (trade.gttTriggerId && trade.targetPrice != null && trade.stopLossPrice != null) {
+        const gttTarget = trade.targetPrice, gttStop = trade.stopLossPrice;
+        try {
+            await withGttSellLock(trade.user, trade.tsym, () => modifyPositionGtts(trade.user, trade, gttTarget, gttStop));
+        } catch (e) {
+            Object.assign(trade, before); // the page must not show levels the broker did not take
+            throw e;
+        }
     }
+    // An in-app hard stop (a broker exit looser than the stop, or lots without a GTT) follows the stop the user chose.
+    if (stopChanged && trade.hardStopPrice != null) trade.hardStopPrice = stop;
+    if (targetChanged || stopChanged) persistExitLevels(trade);
     // Breeze has no broker-side exit: the in-app exitMonitor is the only enforcement, so a target/stop set on a position bought without
     // one (manual buy with no exit points) must start the watch here. Re-registering an already-watched trade just replaces its entry
     // (the monitor reads trade.targetPrice/stopLossPrice live off the same object).
     if (trade.broker === 'breeze' && trade.token) exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), 'breeze');
     // Kite/ANT position with no GTT and no bracket (bought without exit points): nothing would enforce the new levels, so arm the in-app watch.
-    else if ((trade.broker === 'ant' || (trade.broker ?? 'kite') === 'kite') && !trade.gttTriggerId && trade.token && trade.targetPrice !== undefined && trade.stopLossPrice !== undefined) {
+    else if ((trade.broker === 'ant' || (trade.broker ?? 'kite') === 'kite') && !trade.gttTriggerId && trade.token && (trade.targetPrice != null || trade.stopLossPrice != null)) {
         exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), trade.broker === 'ant' ? 'ant' : 'kite');
     }
     bookkeeping.notifyTargetStopLossChanged();

@@ -18,7 +18,8 @@ const ITEMS: Array<[string, string, string?]> = [
 // Shown to Advanced accounts (and admins) only: they are the ones who can choose fixed lots and set their own stop-loss.
 const ADVANCED_ITEMS: Array<[string, string]> = [
   ['Trade limit and fixed-lot mode', 'In investment-amount mode you can place at most 3 trades a day. Fixed-lot mode (1 lot every time) has no daily trade cap, but your daily and weekly loss limits and the per-trade loss cap still apply.'],
-  ['Why was my position smaller than my capital?', 'Your position is sized so one stopped-out trade cannot lose more than the per-trade percentage of your capital shown in the Beginner / Advanced table, so a cheap option with a wide stop-loss buys fewer lots.'],
+  ['Can I change a target or stop loss after buying?', 'Yes. Under Active Positions press Edit, type the new points from your average price and press Save. A stop loss wider than the per-trade loss limit is held at that limit, and a level the price has already crossed is not accepted.'],
+  ['Why was my position smaller than my capital?','Your position is sized so one stopped-out trade cannot lose more than the per-trade percentage of your capital shown in the Beginner / Advanced table, so a cheap option with a wide stop-loss buys fewer lots.'],
 ];
 
 // A "?" help icon for the page header; clicking it opens every question and answer at once.

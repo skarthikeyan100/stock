@@ -1617,9 +1617,10 @@ class OrderBookkeeping {
                 // A COPY is stored: the open row is an aggregate that later buys of the contract add their quantity to. Storing the fill's own
                 // object let a second fill of the same contract (two freeze-quantity parts filling in the same instant) raise this fill's quantity
                 // before its listeners ran, so strategies were told 2470 for the 1755 part and booked the 715 part twice (2026-11-23 14:18).
-                this.trades.push(Object.assign(new Trade(), tradeEvent));
+                this.trades.push(Object.assign(new Trade(), tradeEvent, tradeEvent.brokerOrderId ? { buyOrderIds: [String(tradeEvent.brokerOrderId)] } : {}));
             } else {
                 const trade = this.trades[index];
+                if (tradeEvent.brokerOrderId) trade.buyOrderIds = [...(trade.buyOrderIds ?? []), String(tradeEvent.brokerOrderId)];
                 const traded = trade.quantity * trade.price;
                 const newTraded = tradeEvent.quantity * tradeEvent.price;
                 trade.quantity += tradeEvent.quantity;

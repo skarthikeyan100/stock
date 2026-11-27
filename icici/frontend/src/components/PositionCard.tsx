@@ -23,8 +23,25 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
   const hasStopLoss = !!trade.stopLossPrice;
   const hasTargetSet = hasTarget && hasStopLoss;
   const [busy, setBusy] = useState(false);
+  // The inputs are open while nothing is set yet, or after "Edit". An ANT bracket's levels live at the broker and cannot be changed.
+  const [editing, setEditing] = useState(false);
+  const fixedAtBroker = trade.broker === 'ant' && !!trade.antOrderNo;
+  const showInputs = !fixedAtBroker && (editing || (!hasTarget && !hasStopLoss));
 
-  // Only the side(s) the user filled in are sent (0 = leave unset); inputs are cleared only if the server accepted it.
+  // Prefilled with the current distance from the average price; a level on the other side of it is left empty (and stays unless replaced).
+  const asPoints = (points: number) => (points > 0 ? String(Math.round(points * 100) / 100) : '');
+  const startEditing = () => {
+    setTargetPoints(hasTarget ? asPoints(trade.targetPrice! - trade.price) : '');
+    setSlPoints(hasStopLoss ? asPoints(trade.price - trade.stopLossPrice!) : '');
+    setEditing(true);
+  };
+  const stopEditing = () => {
+    setTargetPoints('');
+    setSlPoints('');
+    setEditing(false);
+  };
+
+  // Only the side(s) the user filled in are sent (0 = leave as it is); inputs are closed only if the server accepted it.
   const handleSetTargetSL = async () => {
     if (busy) return;
     const tp = targetPoints ? parseFloat(targetPoints) : 0;
@@ -33,10 +50,7 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
     setBusy(true);
     try {
       const ok = await setTargetStopLoss(trade.token, tp, sl, trade.broker);
-      if (ok) {
-        setTargetPoints('');
-        setSlPoints('');
-      }
+      if (ok) stopEditing();
     } finally {
       setBusy(false);
     }
@@ -149,45 +163,53 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
         {!closed && (
           <div className="mt-2 pt-2 border-top">
             {(hasTarget || hasStopLoss) && (
-              <small className="text-muted d-block mb-1">
-                Target: <span className="fw-bold text-success">{hasTarget ? <>&#8377;{trade.targetPrice?.toFixed(2)}</> : 'not set'}</span>
-                {' '}&middot;{' '}
-                Stop Loss: <span className="fw-bold text-danger">{hasStopLoss ? <>&#8377;{trade.stopLossPrice?.toFixed(2)}</> : 'not set'}</span>
-                {demo && hasTargetSet && <DemoHelpTip text="The position auto-squares-off the moment a live price reaches the Target or Stop Loss level - no action needed from you." />}
-              </small>
+              <div className="d-flex align-items-center gap-2 mb-1">
+                <small className="text-muted">
+                  Target: <span className="fw-bold text-success">{hasTarget ? <>&#8377;{trade.targetPrice?.toFixed(2)}</> : 'not set'}</span>
+                  {' '}&middot;{' '}
+                  Stop Loss: <span className="fw-bold text-danger">{hasStopLoss ? <>&#8377;{trade.stopLossPrice?.toFixed(2)}</> : 'not set'}</span>
+                  {demo && hasTargetSet && <DemoHelpTip text="The position auto-squares-off the moment a live price reaches the Target or Stop Loss level - no action needed from you." />}
+                </small>
+                {!showInputs && !fixedAtBroker && (
+                  <Button variant="outline-primary" size="sm" className="ms-auto" onClick={startEditing}>
+                    Edit
+                  </Button>
+                )}
+              </div>
             )}
-            {!hasTargetSet && (
+            {showInputs && (
               <div className="d-flex align-items-center gap-2 flex-wrap">
                 {demo && <DemoHelpTip text="Optional: set a target and/or stop-loss in points from your entry price. The position auto-squares-off the moment a live price crosses either level." />}
-                {!hasTarget && (
-                  <InputGroup size="sm" style={{ width: 120 }}>
-                    <InputGroup.Text>T</InputGroup.Text>
-                    <Form.Control
-                      type="number"
-                      placeholder="pts"
-                      value={targetPoints}
-                      onChange={(e) => setTargetPoints(e.target.value)}
-                      min="0"
-                      step="0.5"
-                    />
-                  </InputGroup>
-                )}
-                {!hasStopLoss && (
-                  <InputGroup size="sm" style={{ width: 120 }}>
-                    <InputGroup.Text>SL</InputGroup.Text>
-                    <Form.Control
-                      type="number"
-                      placeholder="pts"
-                      value={slPoints}
-                      onChange={(e) => setSlPoints(e.target.value)}
-                      min="0"
-                      step="0.5"
-                    />
-                  </InputGroup>
-                )}
+                <InputGroup size="sm" style={{ width: 120 }}>
+                  <InputGroup.Text>T</InputGroup.Text>
+                  <Form.Control
+                    type="number"
+                    placeholder="pts"
+                    value={targetPoints}
+                    onChange={(e) => setTargetPoints(e.target.value)}
+                    min="0"
+                    step="0.5"
+                  />
+                </InputGroup>
+                <InputGroup size="sm" style={{ width: 120 }}>
+                  <InputGroup.Text>SL</InputGroup.Text>
+                  <Form.Control
+                    type="number"
+                    placeholder="pts"
+                    value={slPoints}
+                    onChange={(e) => setSlPoints(e.target.value)}
+                    min="0"
+                    step="0.5"
+                  />
+                </InputGroup>
                 <Button variant="outline-primary" size="sm" disabled={busy} onClick={handleSetTargetSL}>
-                  Set
+                  {editing ? 'Save' : 'Set'}
                 </Button>
+                {editing && (
+                  <Button variant="outline-secondary" size="sm" disabled={busy} onClick={stopEditing}>
+                    Cancel
+                  </Button>
+                )}
               </div>
             )}
           </div>

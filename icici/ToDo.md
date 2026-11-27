@@ -4,6 +4,7 @@ This file is a snapshot of pending/in-progress work, kept current by hand (there
 
 ## Open decisions / unfinished work
 
+- **Trading page: one card after Buy, editable target / stop (2026-11-27, item 183 in `open-review-items.md`; the page is deployed, the server half applies when the trading process restarts, held by the orchestrator until after 15:35):** not seen in a browser, not live-verified. First-live check: one card after a buy; Edit a stop, confirm it (and a Kite GTT) changes.
 - **ANT "order-notify push was missed" message corrected (2026-11-27, log text only, `tsc` clean, no tests run; NOT live until the trading process restarts).** Items 172-175 in `open-review-items.md`. On order 26112700040134 the push arrived 20 s after the notify wait ended; booking followed about 4 s later at the next REST poll (not changed). Open: 173 (same wording for Breeze), 174 / 175 (code-read, low).
 - **Trading page declutter (2026-11-27, item 181 in `open-review-items.md`):** success panels, button prices, Pending orders card, re-price, market selling and the square-off confirmation removed; not seen in a browser, not live-verified. Open: an ANT bracket position cannot be exited from the page.
 - **Trading page: buy / square-off at the clicked price, NIFTY / SENSEX switch (2026-11-26, deployed at 15:07 on the user's instruction; type-checked and built, no tests run, not live-verified).** Items 164-169 in `open-review-items.md`. Remaining: the first-live checks of item 165. **Decisions open:** 166 (ANT bracket positions), 168 / 169 (pre-existing gaps found).

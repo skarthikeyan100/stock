@@ -28,7 +28,8 @@ export default function TradingPage() {
   // Search & Buy is an Advanced feature (the server refuses a Beginner's contract order too); admins see everything.
   const canSearch = isAdmin || user?.proficiencyLevel === 'advanced';
   // Buys still waiting to fill are listed with the active positions (a pending sell is shown on its position's card).
-  const pendingBuys = locked ? locked.pending.filter((o) => o.action === 'Buy') : [];
+  // A buy already counted in a position is not listed again: the pending list can be a moment behind the positions.
+  const pendingBuys = locked ? locked.pending.filter((o) => o.action === 'Buy' && !trades.some((t) => (!t.broker || t.broker === o.broker) && t.buyOrderIds?.includes(o.orderId))) : [];
   const activeCount = trades.length + pendingBuys.length;
   const severalBrokers = new Set([...trades.map((t) => t.broker), ...pendingBuys.map((o) => o.broker)].filter(Boolean)).size > 1;
 
