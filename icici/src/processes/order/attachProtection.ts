@@ -6,7 +6,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { exchangeForTsym } from '../../util/underlyings';
 import { persistGttTriggerId, isGttGoneError } from './kiteExecutor';
-import { findPendingOrdersForSymbol } from './pendingLimitOrders';
+import { withGttSellLock, kiteSellBusy } from './gttRelease';
 import type { BrokerName } from '../../util/brokerName';
 
 // Attaches an absolute target / stop-loss to a position that is ALREADY open (a filled limit buy), unlike finalizeEntry which runs
@@ -43,19 +43,26 @@ export async function attachProtection(
     trade.stopLossPrice = stop;
     trade.targetPoints = roundToTick(target - entry);
 
-    // A sell already resting for the position (a square-off at a locked price) owns its quantity: a GTT beside it could sell it twice.
-    const sellResting = broker === 'kite' && findPendingOrdersForSymbol(userId, trade.tsym).some((o) => o.action === 'Sell');
-    if (broker === 'kite' && bookkeeping.getUserUseGTT(userId) && !sellResting) {
-        try {
-            trade.gttTriggerId = await Kite.getInstance().placeTargetStopLossGTT(
-                trade.tsym, exchange, trade.quantity, entry, target - entry, entry - stop, entry,
-            );
-            exitMonitor.registerTrade(trade, exchange, 'kite', true);
-            persistGttTriggerId(trade); // the Buy document was inserted before this GTT existed; a restart must learn its id
+    if (broker === 'kite' && bookkeeping.getUserUseGTT(userId)) {
+        // Under the lock every platform sell takes: none can be placed between the check and the new GTT.
+        const gttTriggerId = await withGttSellLock(userId, trade.tsym, async () => {
+            // A sell resting or in flight for the position owns its quantity: a GTT beside it could sell it twice.
+            if (kiteSellBusy(userId, trade.tsym) || !bookkeeping.trades.includes(trade)) return undefined;
+            try {
+                trade.gttTriggerId = await Kite.getInstance().placeTargetStopLossGTT(
+                    trade.tsym, exchange, trade.quantity, entry, target - entry, entry - stop, entry,
+                );
+                exitMonitor.registerTrade(trade, exchange, 'kite', true);
+                persistGttTriggerId(trade); // the Buy document was inserted before this GTT existed; a restart must learn its id
+                return trade.gttTriggerId;
+            } catch (e) {
+                Log.log(`[order] attachProtection: GTT placement failed for ${tradingSymbol} (${userId}) - falling back to in-app target/SL monitoring:`, e);
+                return undefined;
+            }
+        });
+        if (gttTriggerId !== undefined) {
             bookkeeping.notifyTargetStopLossChanged();
-            return { mode: 'gtt', gttTriggerId: trade.gttTriggerId };
-        } catch (e) {
-            Log.log(`[order] attachProtection: GTT placement failed for ${tradingSymbol} (${userId}) - falling back to in-app target/SL monitoring:`, e);
+            return { mode: 'gtt', gttTriggerId };
         }
     }
     exitMonitor.registerTrade(trade, exchange, broker);

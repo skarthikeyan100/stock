@@ -24,6 +24,7 @@ import { ownerSellCap } from './neverShortClass';
 import Mongo from '../../tools/mongo';
 import { registerEntryExit } from './entryExits';
 import { manualBuyChunked, squareOffAutoChunked, defaultFreezeQty } from './chunkedOrder';
+import { releaseGttsForSell, watchInApp, withGttSellLock, acquireGttSellLock, markKiteSelling, kiteSellBusy } from './gttRelease';
 import type { Trade as TradeRow } from '../../model/model';
 
 // Kite is the primary execution broker (per current product decision - Prism
@@ -488,6 +489,7 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
         throw new Error(`Square-off for ${tsym} is already in progress for ${userId}`);
     }
     bookkeeping.pendingSquareOffs.add(pendingKey);
+    let gttRemoved = false;
     try {
         Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId}`);
         // ANT commonToken for pricing (see getMarketableKitePrice) - every open
@@ -499,19 +501,15 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
         }
         const token = existing.token;
 
-        // The row carries broker GTTs: one of them may have FIRED already (its lot is sold at the broker, the poll has not booked it yet). Book those
-        // first, so this exit sells only what is really still held (a duplicate exit on top of a fired GTT is refused by the never-short guard).
-        // A row restored without its GTT id (restart) has none to look at: ask the poll to re-adopt/settle this contract's GTT too (live 2026-11-12 10:11: the stop GTT
-        // had fired at the broker, the active in-app monitor then tried the same sell 280 times).
-        if (gttIdsOf(existing).length === 0 && existing.targetPrice != null || gttIdsOf(existing).length === 0 && existing.stopLossPrice != null) gttAdoptNow.add(tsym);
-        if (gttIdsOf(existing).length > 0 || gttAdoptNow.has(tsym)) {
-            try { await pollGttFills(); } catch (e) { Log.log(`[order] squareOffOnKite: GTT settle before the exit of ${tsym} (${userId}) failed:`, (e as any)?.message ?? e); }
-            if (!bookkeeping.trades.includes(existing) || !(existing.quantity > 0)) {
-                Log.log(`[order] squareOffOnKite: ${tsym} (${userId}) was closed by its broker GTT - nothing to sell`);
-                return emptyExitTrade(userId, tsym, 'kite');
-            }
-            quantity = Math.min(quantity, existing.quantity);
+        // No GTT may stay live beside this sell (gttRelease.ts): one that has FIRED is booked first (this exit then sells only what is still held;
+        // live 2026-11-12 10:11: the stop GTT had fired at the broker, the in-app monitor then tried the same sell 280 times), the rest are deleted
+        // before any resting sell is cancelled or the new sell placed. A GTT that cannot be removed refuses the exit.
+        gttRemoved = await withGttSellLock(userId, tsym, () => releaseGttsForSell(userId, tsym));
+        if (!bookkeeping.trades.includes(existing) || !(existing.quantity > 0)) {
+            Log.log(`[order] squareOffOnKite: ${tsym} (${userId}) was closed by its broker GTT - nothing to sell`);
+            return emptyExitTrade(userId, tsym, 'kite');
         }
+        quantity = Math.min(quantity, existing.quantity);
 
         // A resting limit sell for this position (e.g. BulkPcr's target exit) must come off before this
         // market-style sell, or both could fill and oversell. Each is cancelled with a fill recheck; a fill that
@@ -571,6 +569,8 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
         await bookkeeping.recordFill(trade);
         return trade;
     } finally {
+        // What is still open (a partial or failed sell) goes to the in-app monitor until sweepUserExits puts a GTT back.
+        if (gttRemoved) watchInApp(userId, tsym);
         bookkeeping.pendingSquareOffs.delete(pendingKey);
     }
 }
@@ -702,20 +702,28 @@ export async function marketBuyBareOnKite(userId: string, tradingSymbol: string,
 export async function marketSellBareOnKite(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const kite = Kite.getInstance();
     Log.log(`[order] Bare market sell ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const sellPrice = await getMarketableKitePrice(instrumentToken, exchange, 'SELL');
-    const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, sellPrice, exchange, () => kiteOwnerCap(userId, tradingSymbol));
-    const orderId = placed.orderId;
-    // The never-short guard may have clamped the sell: book what was actually placed, not what was requested.
-    if (placed.quantity !== quantity) {
-        Log.log(`[order] marketSellBareOnKite: sell for ${tradingSymbol} (${userId}) clamped ${quantity} -> ${placed.quantity} by the never-short guard`);
-        quantity = placed.quantity;
-    }
-    const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'Sell', userId: userId, orderId: orderId }, qty, price);
-    const fillPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordFill(t));
-    const trade = mk(quantity, fillPrice);
+    const done = markKiteSelling(userId, tradingSymbol); // no GTT is placed while this sell is open (it never reaches the pending tracker)
+    let gttRemoved = false;
+    try {
+        gttRemoved = await withGttSellLock(userId, tradingSymbol, () => releaseGttsForSell(userId, tradingSymbol));
+        const sellPrice = await getMarketableKitePrice(instrumentToken, exchange, 'SELL');
+        const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, sellPrice, exchange, () => kiteOwnerCap(userId, tradingSymbol));
+        const orderId = placed.orderId;
+        // The never-short guard may have clamped the sell: book what was actually placed, not what was requested.
+        if (placed.quantity !== quantity) {
+            Log.log(`[order] marketSellBareOnKite: sell for ${tradingSymbol} (${userId}) clamped ${quantity} -> ${placed.quantity} by the never-short guard`);
+            quantity = placed.quantity;
+        }
+        const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'Sell', userId: userId, orderId: orderId }, qty, price);
+        const fillPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordFill(t));
+        const trade = mk(quantity, fillPrice);
 
-    await bookkeeping.recordFill(trade);
-    return trade;
+        await bookkeeping.recordFill(trade);
+        return trade;
+    } finally {
+        done();
+        if (gttRemoved) watchInApp(userId, tradingSymbol);
+    }
 }
 
 // ButterflyStrategy's narrow sell-to-open exception ONLY - see Kite.ts's
@@ -790,11 +798,18 @@ export async function placeLimitSellBareOnKite(userId: string, tradingSymbol: st
         throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] Bare limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
-    const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, price, exchange, () => kiteOwnerCap(userId, tradingSymbol));
-    const orderId = placed.orderId;
-    // Track the quantity actually placed (the never-short guard may have clamped it) so the fill is booked correctly.
-    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity: placed.quantity, exchange, action: 'Sell', price });
-    return { orderId, quantity: placed.quantity };
+    // Locked until the order is tracked: the GTTs go first (a GTT live beside a resting sell can sell the quantity twice - gttRelease.ts), and no
+    // new GTT is placed in between.
+    return withGttSellLock(userId, tradingSymbol, async () => {
+        // The monitor is armed before the order goes out, so a refused sell never leaves the position unwatched. A stop it hits meanwhile waits
+        // for this lock, then cancels the resting sell and sells.
+        if (await releaseGttsForSell(userId, tradingSymbol)) watchInApp(userId, tradingSymbol);
+        const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, price, exchange, () => kiteOwnerCap(userId, tradingSymbol));
+        const orderId = placed.orderId;
+        // Track the quantity actually placed (the never-short guard may have clamped it) so the fill is booked correctly.
+        trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity: placed.quantity, exchange, action: 'Sell', price });
+        return { orderId, quantity: placed.quantity };
+    });
 }
 
 // Cancels a resting limit order (e.g. ContinuousStrategy's root-refill drift-cancel
@@ -1134,39 +1149,43 @@ async function reprotectOnce(userId: string, tsym: string, state: { again: boole
         }
         for (let attempt = 0; attempt <= REPROTECT_BACKOFF_MS.length; attempt++) {
             if (attempt > 0) await reprotectDelay.sleep(REPROTECT_BACKOFF_MS[attempt - 1]);
-            if (!bookkeeping.trades.includes(row)) return;
-            if (row.quantity !== qty) { state.again = true; return; } // another add-more booked: the next round re-sizes it
-            if (bookkeeping.pendingSquareOffs.has(`kite:${userId}:${tsym}`)) { Log.log(`[order] re-protect ${tsym} (${userId}): a sell is in progress - no GTT placed`); return; }
-            const stop = row.stopLossPrice as number;
-            const target = row.targetPrice as number;
-            const last = row.lastTradePrice > 0 ? row.lastTradePrice : row.price;
-            if (!(stop > 0) || !(stop < last) || !(last < target)) {
-                row.hardStopPrice = undefined;
-                Log.log(`[order] ALERT: no GTT can be placed for ${tsym} (${userId}): need 0 < stop ${stop} < last ${last} < target ${target} - the in-app exit monitor owns the exit`);
-                return;
-            }
-            let id: number;
+            // Under the lock every platform sell takes: none can be placed between the checks and the new GTT.
+            const unlock = await acquireGttSellLock(userId, tsym);
             try {
-                id = await kite.placeTargetStopLossGTT(tsym, exchange, qty, stop, target - stop, 0, last);
-            } catch (e) {
-                Log.log(`[order] ALERT: replacement GTT for ${tsym} (${userId}) qty ${qty} failed (attempt ${attempt + 1}/${REPROTECT_BACKOFF_MS.length + 1}):`, (e as any)?.message ?? e);
-                continue;
-            }
-            if (!bookkeeping.trades.includes(row) || row.quantity !== qty) {
-                // The position was sold / grown while the GTT was being placed: that GTT must not stay live next to the in-app exit.
-                try { await kite.deleteGTT(id); Log.log(`[order] replacement GTT ${id} of ${tsym} (${userId}) deleted - the position changed while it was placed`); }
-                catch (e) { Log.log(`[order] ALERT: replacement GTT ${id} of ${tsym} (${userId}) is stale and could NOT be deleted - delete it by hand in Kite:`, e); }
-                if (bookkeeping.trades.includes(row)) state.again = true;
+                if (!bookkeeping.trades.includes(row)) return;
+                if (row.quantity !== qty) { state.again = true; return; } // another add-more booked: the next round re-sizes it
+                if (kiteSellBusy(userId, tsym)) { Log.log(`[order] re-protect ${tsym} (${userId}): a sell is in progress - no GTT placed`); return; }
+                const stop = row.stopLossPrice as number;
+                const target = row.targetPrice as number;
+                const last = row.lastTradePrice > 0 ? row.lastTradePrice : row.price;
+                if (!(stop > 0) || !(stop < last) || !(last < target)) {
+                    row.hardStopPrice = undefined;
+                    Log.log(`[order] ALERT: no GTT can be placed for ${tsym} (${userId}): need 0 < stop ${stop} < last ${last} < target ${target} - the in-app exit monitor owns the exit`);
+                    return;
+                }
+                let id: number;
+                try {
+                    id = await kite.placeTargetStopLossGTT(tsym, exchange, qty, stop, target - stop, 0, last);
+                } catch (e) {
+                    Log.log(`[order] ALERT: replacement GTT for ${tsym} (${userId}) qty ${qty} failed (attempt ${attempt + 1}/${REPROTECT_BACKOFF_MS.length + 1}):`, (e as any)?.message ?? e);
+                    continue;
+                }
+                if (!bookkeeping.trades.includes(row) || row.quantity !== qty) {
+                    // The position was sold / grown while the GTT was being placed: that GTT must not stay live next to the in-app exit.
+                    try { await kite.deleteGTT(id); Log.log(`[order] replacement GTT ${id} of ${tsym} (${userId}) deleted - the position changed while it was placed`); }
+                    catch (e) { Log.log(`[order] ALERT: replacement GTT ${id} of ${tsym} (${userId}) is stale and could NOT be deleted - delete it by hand in Kite:`, e); }
+                    if (bookkeeping.trades.includes(row)) state.again = true;
+                    return;
+                }
+                row.gttTriggerId = id;
+                row.extraGttTriggerIds = undefined;
+                row.hardStopPrice = undefined;
+                persistGttTriggerId(row);
+                exitMonitor.registerTrade(row, exchange, 'kite', true);
+                bookkeeping.notifyTargetStopLossChanged();
+                Log.log(`[order] re-protected ${tsym} (${userId}): ONE GTT ${id} for the merged qty ${qty}, stop ${stop} target ${target}`);
                 return;
-            }
-            row.gttTriggerId = id;
-            row.extraGttTriggerIds = undefined;
-            row.hardStopPrice = undefined;
-            persistGttTriggerId(row);
-            exitMonitor.registerTrade(row, exchange, 'kite', true);
-            bookkeeping.notifyTargetStopLossChanged();
-            Log.log(`[order] re-protected ${tsym} (${userId}): ONE GTT ${id} for the merged qty ${qty}, stop ${stop} target ${target}`);
-            return;
+            } finally { unlock(); }
         }
         row.hardStopPrice = undefined;
         Log.log(`[order] ALERT: ${tsym} (${userId}) has NO GTT after ${REPROTECT_BACKOFF_MS.length + 1} attempts - the in-app exit monitor owns the exit at stop ${row.stopLossPrice} / target ${row.targetPrice}`);

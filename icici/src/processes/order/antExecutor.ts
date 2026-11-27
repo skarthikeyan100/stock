@@ -791,6 +791,10 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 // that must lock in a specific price - see placeLimitSellBareOnKite's
 // comment for why (2026-09-22 incident).
 export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', product?: 'INTRADAY' | 'LONGTERM'): Promise<{ orderId: string; quantity: number }> {
+    // A bracket / cover position's own sell legs already rest at the broker (not on the pending tracker): another sell beside them could sell it twice.
+    if (bookkeeping.trades.some((t) => t.tsym === tradingSymbol && t.user === userId && t.broker === 'ant' && !!t.antOrderNo && t.quantity > 0)) {
+        throw markNotPlaced(new Error(`${tradingSymbol} (${userId}) is an ANT bracket/cover position: its exit lives at the broker - limit sell not placed (square it off at market instead)`));
+    }
     const ant = ANT.getInstance();
     quantity = await neverShortSellable({ ...ownerFields('ant', tradingSymbol, userId),
         label: `${tradingSymbol} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),

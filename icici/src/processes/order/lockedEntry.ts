@@ -19,6 +19,7 @@ import * as exitMonitor from './exitMonitor';
 import { TRACKERS } from './pendingTrackers';
 import { defaultFreezeQty, throttleOrderPlacement } from './chunkedOrder';
 import { gttIdsOf, persistGttTriggerId, reprotectAfterBuy, placeLimitBuyBareOnKite, cancelOrderOnKite } from './kiteExecutor';
+import { acquireGttSellLock, kiteSellOpen } from './gttRelease';
 import { placeLimitBuyBareOnAnt, cancelOrderOnAnt } from './antExecutor';
 import { placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, tsymFor } from './breezeExecutor';
 import { OptionExchange, OrderAlreadyFilledError } from './BrokerExecutor';
@@ -266,7 +267,7 @@ export async function protectLot(userId: string, trade: Trade, row: EntryExit): 
     const { target, stop } = lotLevels(Number(row.limitPrice), fill, Number(row.targetPoints) || 0, Number(row.stopPoints) || 0);
     if (target === undefined && stop === undefined) { Log.log(`[order] limit entry ${row.tsym} (${userId}) filled at ${fill} with no target / stop requested`); return; }
     const exchange = row.exchange;
-    const sellBusy = () => bookkeeping.pendingSquareOffs.has(`${broker}:${userId}:${row.tsym}`) || TRACKERS[broker].find(userId, row.tsym).some((o) => o.action === 'Sell');
+    const sellBusy = () => bookkeeping.pendingSquareOffs.has(`${broker}:${userId}:${row.tsym}`) || TRACKERS[broker].find(userId, row.tsym).some((o) => o.action === 'Sell') || (broker === 'kite' && kiteSellOpen(userId, row.tsym));
     const finish = (mode: string) => {
         persistExits(userId, row.tsym, String(row.orderId), { ...(target !== undefined ? { targetPrice: target } : {}), ...(stop !== undefined ? { stopLossPrice: stop } : {}) });
         bookkeeping.tightenStopToLossBudget(userId, broker, row.tsym);
@@ -281,24 +282,28 @@ export async function protectLot(userId: string, trade: Trade, row: EntryExit): 
         // This lot's own GTT, for this lot's quantity: the GTTs of a position together never exceed it.
         const quantity = Math.min(trade.quantity, held.quantity);
         if (quantity <= defaultFreezeQty(row.tsym, exchange)) {
+            // Under the lock every platform sell takes: none can be placed between the check and the new GTT.
+            const unlock = await acquireGttSellLock(userId, row.tsym);
             try {
-                const id = await Kite.getInstance().placeTargetStopLossGTT(row.tsym, exchange, quantity, fill, target - fill, fill - stop, fill);
-                if (find() !== held || sellBusy() || held.quantity < quantity) {
-                    // The position was sold, or a sell was placed, while the GTT was being placed: it must not stay live beside that sell.
-                    await Kite.getInstance().deleteGTT(id).catch((e) => Log.log(`[order] ALERT: GTT ${id} of ${row.tsym} (${userId}) is stale and could NOT be deleted - delete it by hand in Kite:`, e));
-                } else {
-                    if (held.gttTriggerId == null) held.gttTriggerId = id;
-                    else held.extraGttTriggerIds = [...(held.extraGttTriggerIds ?? []), id];
-                    if (held.targetPrice == null) { held.targetPrice = target; held.targetPoints = roundToTick(target - fill); }
-                    if (held.stopLossPrice == null) held.stopLossPrice = stop;
-                    persistGttTriggerId(Object.assign(new Trade(), { tsym: row.tsym, user: userId, gttTriggerId: id }));
-                    exitMonitor.registerTrade(held, exchange, 'kite', true);
-                    finish(`GTT ${id}`);
-                    return;
+                if (!sellBusy()) {
+                    const id = await Kite.getInstance().placeTargetStopLossGTT(row.tsym, exchange, quantity, fill, target - fill, fill - stop, fill);
+                    if (find() !== held || sellBusy() || held.quantity < quantity) {
+                        // The position was sold, or a sell was placed, while the GTT was being placed: it must not stay live beside that sell.
+                        await Kite.getInstance().deleteGTT(id).catch((e) => Log.log(`[order] ALERT: GTT ${id} of ${row.tsym} (${userId}) is stale and could NOT be deleted - delete it by hand in Kite:`, e));
+                    } else {
+                        if (held.gttTriggerId == null) held.gttTriggerId = id;
+                        else held.extraGttTriggerIds = [...(held.extraGttTriggerIds ?? []), id];
+                        if (held.targetPrice == null) { held.targetPrice = target; held.targetPoints = roundToTick(target - fill); }
+                        if (held.stopLossPrice == null) held.stopLossPrice = stop;
+                        persistGttTriggerId(Object.assign(new Trade(), { tsym: row.tsym, user: userId, gttTriggerId: id }));
+                        exitMonitor.registerTrade(held, exchange, 'kite', true);
+                        finish(`GTT ${id}`);
+                        return;
+                    }
                 }
             } catch (e) {
                 Log.log(`[order] GTT placement failed for ${row.tsym} (${userId}) - falling back to in-app target/SL monitoring:`, e);
-            }
+            } finally { unlock(); }
         }
     }
     const now = find();

@@ -1,5 +1,4 @@
 import Log from '../../util/Log';
-import Mongo from '../../tools/mongo';
 import Kite from '../../kite/Kite';
 import { Trade } from '../../model/model';
 import { exchangeForTsym } from '../../util/underlyings';
@@ -11,27 +10,22 @@ import { TRACKERS } from './pendingTrackers';
 import { getExecutorByBroker } from './brokerExecutors';
 import { BrokerExecutor, OrderAlreadyFilledError, cancelRestingSellsAheadOfExit, waitUntilNotResting, withSellLock } from './BrokerExecutor';
 import { defaultFreezeQty, squareOffLimitChunked } from './chunkedOrder';
-import { gttIdsOf, forgetGttIds, pollGttFills, persistGttTriggerId, isReprotecting, isGttGoneError, settleGtts } from './kiteExecutor';
+import { gttIdsOf, persistGttTriggerId, isReprotecting } from './kiteExecutor';
+import { removeGtts, saveExitRecord, userExitsCol as col, today, ExitRow, withGttSellLock, kiteSellOpen } from './gttRelease';
 import { placeLimitSellBareOnAnt } from './antExecutor';
 import { LockedBroker, isLockedBroker, registerLockedOrder, kickPoll, notifyUser } from './lockedOrders';
 
 // A frontend user's square-off at the price they clicked: a resting LIMIT sell of the position at that price (rounded UP to the tick, so it never
 // sells below what was shown). Never short, never sold twice:
 //  - one exit operation per position at a time (bookkeeping.pendingSquareOffs, the key the market exits use too);
-//  - a Kite GTT is deleted and confirmed gone BEFORE the sell is placed (a GTT bypasses the never-short guard: left live beside a resting sell it
-//    could sell the position a second time); the in-app exit monitor holds the same target / stop meanwhile, and a stop or target it hits cancels
-//    the resting sell first and then sells, exactly as every other exit does;
+//  - a Kite GTT is deleted and confirmed gone BEFORE the sell is placed (gttRelease.ts: the same rule for every platform sell on Kite); the
+//    in-app exit monitor holds the same target / stop meanwhile, and a stop or target it hits cancels the resting sell first and then sells,
+//    exactly as every other exit does;
 //  - a sell already resting for the position is cancelled with a fill re-check before the new one is placed (a second click re-prices);
 //  - the broker executors' own never-short guard still applies to the new sell.
 // When the sell ends without closing the position (cancelled, rejected, expired), sweepUserExits puts the Kite GTT back; until then the in-app
 // monitor protects it. State is durable (Mongo `userExitSells`, one row per user + broker + contract).
-// Only the square-off click uses this. Stops, targets, end-of-day, drawdown and max-profit exits are unchanged.
-
-const COLLECTION = 'userExitSells';
-const col = () => Mongo.getInstance()?.db?.collection(COLLECTION);
-const today = () => new Date().toLocaleDateString('en-CA');
-
-interface ExitRow { userId: string; broker: LockedBroker; tsym: string; token: string; day: string; hadGtt: boolean; orders: { orderId: string; quantity: number; price: number }[]; attempts?: number }
+// The sweep below also puts back the GTT that any other platform sell removed (gttRelease.releaseGttsForSell).
 
 /** The lowest tick at or above `price`: a sell never asks less than the price shown. */
 export function ceilToTick(price: number): number {
@@ -47,82 +41,6 @@ export interface LockedSellResult {
 const refuse = (message: string): Error => markNotPlaced(new Error(message));
 const keyOf = (broker: string, userId: string, tsym: string) => `${broker}:${userId}:${tsym}`;
 const filterOf = (userId: string, broker: string, tsym: string) => ({ userId, broker, tsym });
-
-async function saveRecord(userId: string, broker: LockedBroker, row: Trade, set: Partial<ExitRow>, push: ExitRow['orders'] = []): Promise<void> {
-    const c = col();
-    if (!c) throw new Error('Mongo not connected');
-    await c.updateOne(filterOf(userId, broker, row.tsym), {
-        $set: { token: String(row.token), day: today(), updatedAt: new Date(), ...set },
-        ...(push.length > 0 ? { $push: { orders: { $each: push } } as any } : {}),
-        ...(set.hadGtt === undefined ? { $setOnInsert: { hadGtt: false } } : {}),
-    }, { upsert: true });
-}
-
-/** Tightest stop and nearest target among the active GTTs and the row's own levels that the last price has not crossed. */
-export function handoverLevels(row: { lastTradePrice?: number; price: number; stopLossPrice?: number; targetPrice?: number }, activeGtts: any[]): { stop?: number; target?: number } {
-    const pairs: number[][] = activeGtts.map((g) => (g?.condition?.trigger_values ?? []).map(Number).filter((n: number) => n > 0)).filter((v: number[]) => v.length === 2);
-    if (pairs.length === 0) return {};
-    const last = Number(row.lastTradePrice) > 0 ? Number(row.lastTradePrice) : row.price;
-    const stops = pairs.map((v) => Math.min(...v));
-    const targets = pairs.map((v) => Math.max(...v));
-    if (row.stopLossPrice != null && row.stopLossPrice < last) stops.push(row.stopLossPrice);
-    if (row.targetPrice != null && row.targetPrice > last) targets.push(row.targetPrice);
-    return { stop: Math.max(...stops), target: Math.min(...targets) };
-}
-
-// Deletes every GTT of the position and confirms it, so none can sell beside the resting sell. Returns 'closed' when a GTT had already sold it.
-// Throws (nothing sold) when a GTT has triggered or cannot be deleted; the position keeps a protection either way.
-async function removeGtts(userId: string, row: Trade): Promise<'closed' | 'done'> {
-    const mayHaveGtt = gttIdsOf(row).length > 0 || (bookkeeping.getUserUseGTT(userId) && (row.targetPrice != null || row.stopLossPrice != null));
-    if (!mayHaveGtt) return 'done';
-    try { await settleGtts(row.tsym); } catch (e: any) { throw refuse(`The Kite GTT of ${row.tsym} could not be checked - square off not placed, the position is unchanged (${e?.message ?? e})`); }
-    if (!bookkeeping.trades.includes(row) || !(row.quantity > 0)) return 'closed';
-    if (isReprotecting(userId, row.tsym)) throw refuse(`The target / stop of ${row.tsym} is being updated - try again in a few seconds`);
-    const ids = gttIdsOf(row);
-    if (ids.length === 0) return 'done';
-    const kite = Kite.getInstance();
-    let book: any[];
-    try { book = await kite.getGTTs(); } catch (e: any) { throw refuse(`The Kite GTT of ${row.tsym} could not be read - square off not placed, the position is unchanged (${e?.message ?? e})`); }
-    const triggered = (list: any[]) => ids.some((id) => list.find((g) => g.id === id)?.status === 'triggered');
-    const fired = () => { void pollGttFills(); return refuse(`The target / stop of ${row.tsym} has just triggered at Kite and is selling the position - square off not placed`); };
-    if (triggered(book)) throw fired();
-    // The levels the in-app monitor takes over: those the live GTTs enforce now, none of which the current price has crossed. The row alone can
-    // carry an earlier lot's level that the price is already past (its GTT fired), which the monitor would sell at once.
-    const levels = handoverLevels(row, ids.map((id) => book.find((g) => g.id === id)).filter((g) => g?.status === 'active'));
-    if (levels.stop !== undefined) row.stopLossPrice = levels.stop;
-    if (levels.target !== undefined) row.targetPrice = levels.target;
-    // Kept on the Buy documents too: a restart while the sell rests must restore the position with its target / stop.
-    if (levels.stop !== undefined || levels.target !== undefined) {
-        await Mongo.getInstance()?.db?.collection('Trade').updateMany({ user: userId, tsym: row.tsym, action: 'Buy', gttTriggerId: { $in: ids } }, { $set: { ...(row.stopLossPrice != null ? { stopLossPrice: row.stopLossPrice } : {}), ...(row.targetPrice != null ? { targetPrice: row.targetPrice } : {}) } })
-            .catch((e) => Log.log(`[order] could not store the target / stop of ${row.tsym} (${userId}):`, e));
-    }
-    await saveRecord(userId, 'kite', row, { hadGtt: true, attempts: 0 });
-    // Lots whose GTT is deleted while another one stays (or has just fired) are covered by an in-app hard stop on the whole position.
-    const coverByHardStop = () => {
-        if (row.stopLossPrice != null) row.hardStopPrice = Math.max(row.hardStopPrice ?? 0, row.stopLossPrice);
-        if (row.token) exitMonitor.registerTrade(row, exchangeForTsym(row.tsym), 'kite', true);
-    };
-    const gone: number[] = [];
-    let failed: number[] = [];
-    for (const id of ids) {
-        try { await kite.deleteGTT(id); gone.push(id); }
-        catch (e) { if (isGttGoneError(e)) gone.push(id); else failed.push(id); }
-    }
-    let after: any[] | undefined;
-    try { after = await kite.getGTTs(); } catch { after = undefined; }
-    if (after) {
-        const stillActive = failed.filter((id) => after!.find((g) => g.id === id)?.status === 'active');
-        if (triggered(after)) { await forgetGttIds(row, gone.filter((id) => after!.find((g) => g.id === id)?.status !== 'triggered')); coverByHardStop(); throw fired(); }
-        for (const id of failed) if (!stillActive.includes(id)) gone.push(id);
-        failed = stillActive;
-    }
-    await forgetGttIds(row, gone);
-    if (failed.length > 0) {
-        coverByHardStop();
-        throw refuse(`The Kite GTT of ${row.tsym} could not be cancelled - square off not placed, the position stays protected`);
-    }
-    return 'done';
-}
 
 function sellExecutor(broker: LockedBroker, row: Trade): BrokerExecutor {
     const base = getExecutorByBroker(broker);
@@ -145,11 +63,11 @@ async function sellRowAtPrice(userId: string, row: Trade, price: number, request
     const open = () => (bookkeeping.trades.includes(row) ? Math.max(0, row.quantity) : 0);
     const exchange = exchangeForTsym(tsym);
     try {
-        if (broker === 'kite' && (await removeGtts(userId, row)) === 'closed') return { ...result, closed: true };
+        if (broker === 'kite' && (await withGttSellLock(userId, tsym, () => removeGtts(userId, row))) === 'closed') return { ...result, closed: true };
         if (!(open() > 0)) return { ...result, closed: true };
         // From here until the sell is booked, the in-app monitor is the exit (it cancels the resting sell before it sells).
         if (row.targetPrice != null || row.stopLossPrice != null) exitMonitor.registerTrade(row, exchange, broker, false);
-        await saveRecord(userId, broker, row, {});
+        await saveExitRecord(userId, broker, row, {});
         const executor = sellExecutor(broker, row);
         const raced: string[] = [];
         const settled = await cancelRestingSellsAheadOfExit({
@@ -178,7 +96,7 @@ async function sellRowAtPrice(userId: string, row: Trade, price: number, request
                 registerLockedOrder({ orderId, broker, userId, action: 'Sell', tsym, token: String(row.token), exchange, quantity: each, price, placedAt: Date.now() });
                 return { orderId, quantity: each, price };
             });
-            await saveRecord(userId, broker, row, {}, orders).catch((e) => Log.log(`[order] ALERT: could not record the resting sell of ${tsym} (${userId}):`, e));
+            await saveExitRecord(userId, broker, row, {}, orders).catch((e) => Log.log(`[order] ALERT: could not record the resting sell of ${tsym} (${userId}):`, e));
         };
         try {
             const placed = await squareOffLimitChunked(executor, userId, tsym, String(row.token), quantity, exchange, price);
@@ -195,7 +113,7 @@ async function sellRowAtPrice(userId: string, row: Trade, price: number, request
         await record(result.orderIds);
         // A GTT attached while the sell was being placed (a buy that filled meanwhile) sells its own lot only, but re-check the whole position:
         // together with the resting sell it must not exceed what is held.
-        if (broker === 'kite' && gttIdsOf(row).length > 0 && result.quantity >= open()) await removeGtts(userId, row).catch((e) => Log.log(`[order] ALERT: ${tsym} (${userId}) has a GTT beside its resting sell and it could not be removed - check Kite:`, e));
+        if (broker === 'kite' && gttIdsOf(row).length > 0 && result.quantity >= open()) await withGttSellLock(userId, tsym, () => removeGtts(userId, row)).catch((e) => Log.log(`[order] ALERT: ${tsym} (${userId}) has a GTT beside its resting sell and it could not be removed - check Kite:`, e));
         Log.log(`[order] square-off at the clicked price: ${tsym} qty=${result.quantity} @ ${price} for ${userId} on ${broker} resting as ${result.orderIds.join(',')}`);
         return result;
     } finally {
@@ -232,6 +150,13 @@ const RESTORE_ATTEMPTS = 3;
 const nothingRestingSince = new Map<string, number>();
 
 async function restoreGtt(record: ExitRow, row: Trade): Promise<boolean> {
+    // Under the lock every platform sell of the position takes: none can be placed between the checks below and the new GTT.
+    return withGttSellLock(record.userId, row.tsym, () => restoreGttLocked(record, row));
+}
+
+async function restoreGttLocked(record: ExitRow, row: Trade): Promise<boolean> {
+    if (kiteSellOpen(record.userId, row.tsym)) return false; // a sell is open again: nothing is restored beside it
+    if (!bookkeeping.trades.includes(row) || gttIdsOf(row).length > 0) return false;
     const exchange = exchangeForTsym(row.tsym);
     const stop = Number(row.stopLossPrice);
     const target = Number(row.targetPrice);
@@ -296,6 +221,8 @@ export async function sweepUserExits(now: number = Date.now()): Promise<void> {
         }
         nothingRestingSince.delete(key);
         await c.deleteOne(filter);
+        // Whatever ends here, the open position is watched as it now stands (watch-only beside a GTT, else the in-app monitor exits it).
+        if (row.token && (row.targetPrice != null || row.stopLossPrice != null)) exitMonitor.registerTrade(row, exchangeForTsym(row.tsym), r.broker, gttIdsOf(row).length > 0 || !!row.antOrderNo);
         const protection = gttIdsOf(row).length > 0 ? 'Its target / stop is back at the broker.' : row.targetPrice != null || row.stopLossPrice != null ? 'The platform watches its target / stop.' : 'It has no target / stop.';
         if ((r.orders ?? []).length > 0) notifyUser(r.userId, `Your limit sell of ${r.tsym} is no longer resting and ${row.quantity} is still open. ${protection}`);
     }

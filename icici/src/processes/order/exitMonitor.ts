@@ -393,7 +393,9 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
             state.nextAt = Date.now() + delay;
             retryGate.set(key, state);
             Log.log(`[order] ALERT: exitMonitor squareoff failed for ${trade.tsym} (${trade.user}, ${broker}), attempt ${state.attempts} - retrying in ${delay / 1000}s:`, (e as any)?.message ?? e);
-            registerTradeInternal(trade, exchange, broker, watchOnly, true);
+            // The failed exit may have removed a Kite position's GTTs ahead of its sell (gttRelease.ts): with no broker exit left, watch it actively.
+            const gttGone = broker === 'kite' && trade.gttTriggerId == null && aggregateResolver?.(trade, broker)?.gttTriggerId == null;
+            registerTradeInternal(trade, exchange, broker, watchOnly && !gttGone, true);
         }
     }
 }

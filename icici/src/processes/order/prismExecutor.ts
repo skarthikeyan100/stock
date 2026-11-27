@@ -63,7 +63,15 @@ export async function buyContract(userId: string, contract: string, quantity: nu
 
 
 
+// A cover-order position's stop already rests at the broker: another sell beside it could sell it twice (squareOffOnPrism exits the cover instead).
+function assertNoPrismCover(userId: string, tsym: string): void {
+    if (bookkeeping.trades.some((t) => t.tsym === tsym && t.user === userId && (t.broker === undefined || t.broker === 'prism') && !!t.prismCoverOrderNo && t.quantity > 0)) {
+        throw markNotPlaced(new Error(`${tsym} (${userId}) is a Prism cover-order position: its exit lives at the broker - sell not placed (square it off instead)`));
+    }
+}
+
 export async function sellContract(userId: string, contract: string, quantity: number, price?: number): Promise<any> {
+    assertNoPrismCover(userId, contract);
     Log.log(`[order] Selling (Prism) ${contract} qty=${quantity} for ${userId}`);
     const prism = Prism.getInstance();
     // Marketable limit (1% under the quote) and a verified fill. This used to place at the exact LTP and record the sale as filled
@@ -418,6 +426,7 @@ async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity:
 // pollPendingPrismLimitOrders. Mirrors placeLimitSellBareOnAnt exactly -
 // BulkPcrStrategy's target-hit exit on Prism.
 export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number }> {
+    assertNoPrismCover(userId, tradingSymbol);
     quantity = await neverShortSellable({ ...ownerFields('prism', tradingSymbol, userId),
         label: `${tradingSymbol} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(tradingSymbol),
         restingSellQuantity: prismRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: prismRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
