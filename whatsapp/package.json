@@ -1,0 +1,13 @@
+{
+  "name": "whatsapp-router",
+  "version": "1.0.0",
+  "description": "Receives WhatsApp messages and forwards each to the broker bot registered for its sender",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx src/index.ts 2>&1 | tee -a logs/dev.log",
+    "test": "vitest run"
+  },
+  "dependencies": { "qrcode-terminal": "^0.12.0", "whatsapp-web.js": "^1.26.0" },
+  "devDependencies": { "@types/node": "^22.10.0", "@types/qrcode-terminal": "^0.12.2", "tsx": "^4.19.2", "typescript": "^5.7.2", "vitest": "^2.1.8" }
+}
