@@ -8,6 +8,8 @@
 # NiftyChange / Recommendation are low-volume, so ALL their lifecycle lines (fills, protection attached, stop/target, cancels, ALERTs)
 # are kept (scripts/monitor-limitentry-events.sh).
 # Also emits one "=== SLOT MISSED" line per slot that BulkPcrAutoStart / NiftyChange did not trade, with the reason.
+# Also emits the combined limit's (settings.combinedMaxProfit) trip, its lock-profits result and its ALERT lines as "!!!" lines. The tag it had before
+# 2026-11-27 (OverAllMaxProfit) is matched too: a trading process not yet restarted still logs it.
 # A filled buy+sell pair is routine and is NOT notified.
 # Also runs scripts/check-dist-fresh.js --watch (not with --once): an `[dist-check] ALERT:` line while dist/ differs from a build of src/.
 #
@@ -28,7 +30,9 @@ READER=(tail -n0 -F "$LOG_FILE")
     "$DIR/monitor-sentiment-events.sh" "$@" &
     if [ "${1:-}" != "--once" ]; then node "$DIR/check-dist-fresh.js" --watch & fi
     "${READER[@]}" 2>/dev/null \
-        | sed -nuE -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange|MomentumAtFixedTime):([^]]*)\] (Missed ([0-9:]{5}) slot.*)/=== SLOT MISSED \1 \2 \3 \5: late - \4/p;t" \
+        | sed -nuE -e "s/^\[([0-9:]{8})\] .*(\[(CombinedMaxProfit|OverAllMaxProfit)\] (TRIPPED|lock-profits done|ALERT).*)/\1 !!! \2/p;t" \
+                   -e "s/^\[([0-9:]{8})\] .*(ALERT: \[(CombinedMaxProfit|OverAllMaxProfit)\].*)/\1 !!! \2/p;t" \
+                   -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange|MomentumAtFixedTime):([^]]*)\] (Missed ([0-9:]{5}) slot.*)/=== SLOT MISSED \1 \2 \3 \5: late - \4/p;t" \
                    -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange|MomentumAtFixedTime):([^]]*)\] ([0-9:]{5}):? ?(slot[: ]*)?(.*(skipp|not arming|not trading|not starting|already attempted|already handled).*)/=== SLOT MISSED \1 \2 \3 \4: \6/p" \
         | awk '{ if ($0 ~ /already handled earlier today/) next; if ($0 ~ /process started after it/) { split($4, a, ":"); split($7, b, ":"); if ((a[1]*60 + a[2]) - (b[1]*60 + b[2]) > 10) next } print; fflush() }' &
     wait

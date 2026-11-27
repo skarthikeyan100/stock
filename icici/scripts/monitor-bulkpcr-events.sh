@@ -16,6 +16,8 @@ READER=(tail $TAIL_OPTS "$LOG_FILE")
 [ "${1:-}" = "--once" ] && READER=(cat "$LOG_FILE")   # dump existing log through the formatter and exit (for testing)
 
 "${READER[@]}" 2>&1 | sed -u -E -n '
+# the combined limit is not a BulkPcr event: monitor-strategies-alerts.sh emits its lines, with the tag (the ALERT rule below would repeat them without it)
+/\[(CombinedMaxProfit|OverAllMaxProfit)\]/d
 # --- buy placed (one shape per broker) ---
 s/^\[([0-9:]{8})\] .*Buying (\S+) qty=([0-9]+) for \S+ via ANT regular order \(ltp=([0-9.]+) limit=([0-9.]+)\).*/\1 ANT     BUY  placed \2 qty=\3 limit=\5/p;t
 s/^\[([0-9:]{8})\] .*Buying (\S+) qty=([0-9]+) @ ([0-9.]+) \(limit.*via Breeze.*/\1 BREEZE  BUY  placed \2 qty=\3 limit=\4/p;t
