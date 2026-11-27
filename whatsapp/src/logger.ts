@@ -1,18 +1,8 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOG_DIR = path.join(__dirname, '..', 'logs');
-const LOG_FILE = path.join(LOG_DIR, 'messages.log');
-
-mkdirSync(LOG_DIR, { recursive: true });
+// JSON lines on stdout; `npm run dev` tees stdout into logs/<name>.log (gopocket.log / whatsapp.log).
 
 function logEvent(level: 'info' | 'error', message: string, extra?: Record<string, unknown>): void {
   const entry = { timestamp: new Date().toISOString(), level, message, ...extra };
-  const line = JSON.stringify(entry);
-  console.log(line);
-  appendFileSync(LOG_FILE, line + '\n');
+  console.log(JSON.stringify(entry));
 }
 
 export function logInfo(message: string, extra?: Record<string, unknown>): void {
