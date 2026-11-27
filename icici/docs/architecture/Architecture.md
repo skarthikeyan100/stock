@@ -117,7 +117,7 @@ Data flow of a Beginner forecast: `POST /forecast` -> record (write-once) -> bot
   (`registerTrade`, or `watchTokenOnSource('ant', token, this, exchange)` for a contract it only watches) and `canHandleOptionQuote` must accept the quote before `processOptionQuote` runs.
 - `reconcile()` (startup and `POST /reconcile`) runs inside `OrderClient.withNoOrders`: it rebuilds state and never places, cancels or modifies an order. Exits and entries start from ticks and
   housekeeping. Class chain: `Strategy` -> `LimitEntryStrategy` (legs, persisted state, fills, entry timeout, EOD close) -> `CandleEntryStrategy` (fixed quantity, target/stop) -> the strategy.
-- The global `settings.maxProfit` needs no per-strategy code: `processes/strategies/globalMaxProfit.ts` judges every strategy that has no profit stop of its own and latches in Mongo; the
+- The global `settings.maxProfit` needs no per-strategy code: `processes/strategies/globalMaxProfit.ts` judges every strategy that has no profit stop of its own (`RecommendationStrategy` is under no max-profit limit) and latches in Mongo; the
   order process then refuses its buys. A block-level `maxProfit` is not read for those strategies.
 
 **Is there a candle builder?** Yes, for NIFTY index ticks: `src/processes/strategies/niftyStatsBuilder.ts`, `createStatsBuilder(bucketSeconds, { aligned: true })`, built on `lib/candle-builder.ts`.

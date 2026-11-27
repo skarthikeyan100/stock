@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import { PlatformSell, readPlatformSells, unseenSells } from './platformSells';
 
 // What a strategy says about what an EARLIER day's state file still shows unfinished (open legs, unconfirmed buys), when it first loads on a new day.
-// Why (live 2026-11-25 14:40): the overall max-profit lock disabled the strategies and limit-sold every open leg. A disabled strategy is told of no
+// Why (live 2026-11-25 14:40): the combined max-profit lock disabled the strategies and limit-sold every open leg. A disabled strategy is told of no
 // fill, so its state still showed the legs open, and the next start ALERTed "still open when the day rolled over" for legs the platform's own sells had
 // closed. The rule (trader doc, Lock profits item 6): a leg the platform's own sell closed is a normal close (a plain line, no alert); an ALERT only
 // when no platform sell explains the leg.

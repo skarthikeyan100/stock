@@ -5,7 +5,7 @@ import { isWithinTradingWindow } from '../../util/marketHours';
 import { isOpenedToday } from '../../util/openedToday';
 import { effectiveMaxProfit } from '../../strategy/effectiveMaxProfit';
 import { clearPrice, LockLeg, tripSellPrice, keepTripSell, TripGuard, isNonTransientRejection, MAX_NON_TRANSIENT } from '../../strategy/maxProfitLock';
-import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers } from '../../strategy/globalMaxProfitLatch';
+import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers, NO_MAX_PROFIT_TYPES } from '../../strategy/globalMaxProfitLatch';
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import OrderClient from './OrderClient';
 import { markPrice } from './markPrice';
@@ -14,7 +14,8 @@ import type { RestingSell } from '../../strategy/restingCover';
 import type { Strategy } from '../../strategy/strategy';
 
 // The GLOBAL maxProfit (config.yml settings.maxProfit: one number of rupees, the same for every broker) for every strategy that has no profit stop of its own, per strategy
-// instance per broker. Strategies that DO have one (below) read the same setting themselves (effectiveMaxProfit), so they are skipped here.
+// instance per broker. Strategies that DO have one (below) read the same setting themselves (effectiveMaxProfit), so they are skipped here, as are the types under no
+// max-profit limit at all (NO_MAX_PROFIT_TYPES: RecommendationStrategy).
 // Same behaviour as SimpleContinuousStrategy: judged on day P&L (realized + open positions marked at the live price, trades opened today), a
 // trip LOCKS the cap - every open position of that strategy on that broker gets one limit sell at the price that makes the total equal the cap
 // (never the live bid) - and no new buy of that strategy on that broker is placed for the rest of the day (the latch is durable in Mongo, see
@@ -146,7 +147,8 @@ async function runOnce(list: Strategy[]): Promise<void> {
     try {
         const candidates: Array<{ userId: string; brokers: string[]; cap: number }> = [];
         for (const s of list) {
-            if (OWN_MAX_PROFIT.has(s.getClassName()) || !s.enabled || !s.stateLoaded) continue; // a disabled strategy takes no action of any kind
+            if (OWN_MAX_PROFIT.has(s.getClassName()) || NO_MAX_PROFIT_TYPES.has(s.getClassName())) continue;
+            if (!s.enabled || !s.stateLoaded) continue; // a disabled strategy takes no action of any kind
             const cfg = configService.getInstances().find((c) => (c.userId || c.type) === s.userId);
             if (!cfg || cfg.enabled === false) continue;
             candidates.push({ userId: s.userId, brokers: configuredBrokersOf(cfg), cap: capForBlock(cfg) }); // read from the live config each cycle

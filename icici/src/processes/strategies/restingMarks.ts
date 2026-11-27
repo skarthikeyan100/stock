@@ -2,7 +2,7 @@ import { RestingSell, restingExcess } from '../../strategy/restingCover';
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import OrderClient from './OrderClient';
 
-// The resting-sell cap of the profit monitors (globalMaxProfit.ts, overAllMaxProfit.ts), per contract of one user on one broker: the order side's
+// The resting-sell cap of the profit monitors (globalMaxProfit.ts, combinedMaxProfit.ts), per contract of one user on one broker: the order side's
 // pending limit sells (the price it stored at placement) and a Kite GTT target. The quantity they cover is valued at no more than their price
 // (restingCover.ts). Everything else, including an order tracked without a price and a target the in-app exit monitor watches (it rests nothing at
 // the broker), stays at the live price.

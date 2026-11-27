@@ -1,5 +1,5 @@
 /**
- * The day-rollover check of what an earlier day's state left unfinished (live 2026-11-26 07:46: ALERTs for legs the overAllMaxProfit lock sells had
+ * The day-rollover check of what an earlier day's state left unfinished (live 2026-11-26 07:46: ALERTs for legs the combinedMaxProfit lock sells had
  * closed the day before, while the strategies were disabled and so not told). A leg the platform's own sells cover is a plain line; an ALERT only when
  * they do not, once, with the record kept in the state file. An order booked only in part explains with its rest; an unconfirmed buy (pendingHedge) is
  * reported, never settled at the broker. Paper legs are never reported. Nothing is ordered, cancelled or booked at rollover.

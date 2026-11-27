@@ -1,8 +1,8 @@
 /**
- * settings.overAllMaxProfit: combined P&L over all strategies/brokers (paper excluded), the setting reader and the config validation.
- * Run: npx tsc, then: node ./dist/test/overAllMaxProfit.test.js
+ * settings.combinedMaxProfit: combined P&L over all strategies/brokers (paper excluded), the setting reader and the config validation.
+ * Run: npx tsc, then: node ./dist/test/combinedMaxProfit.test.js
  */
-import { combinedPnl, overAllMaxProfit } from '../processes/strategies/overAllMaxProfit';
+import { combinedPnl, combinedMaxProfit } from '../processes/strategies/combinedMaxProfit';
 import { validateNumericRanges } from '../prism/configValidation';
 import { recordTick, __setLiveFetch } from '../processes/strategies/markPrice';
 
@@ -22,9 +22,9 @@ function assert(condition: boolean, message: string) {
     ];
     const closed = [{ user: 'S1', broker: 'kite', tsym: 'C', realizedPnL: 300 }, { user: 'S3', broker: 'paper', tsym: 'C', realizedPnL: 999 }];
     assert(Math.round(await combinedPnl({ trades: open, closedTrades: closed })) === 450, 'combined = 50 + 200 - 100 + 300, paper left out');
-    assert(overAllMaxProfit({ overAllMaxProfit: 20000 }) === 20000, 'reads a positive number');
-    assert(overAllMaxProfit({}) === 0 && overAllMaxProfit({ overAllMaxProfit: 0 }) === 0 && overAllMaxProfit({ overAllMaxProfit: '5%' }) === 0, 'absent / 0 / non-number = off');
-    assert(validateNumericRanges('settings', { overAllMaxProfit: 20000 }).length === 0, 'valid value accepted');
-    assert(validateNumericRanges('settings', { overAllMaxProfit: -5 }).length === 1 && validateNumericRanges('settings', { overAllMaxProfit: '10%' }).length === 1, 'negative / percent rejected');
+    assert(combinedMaxProfit({ combinedMaxProfit: 20000 }) === 20000, 'reads a positive number');
+    assert(combinedMaxProfit({}) === 0 && combinedMaxProfit({ combinedMaxProfit: 0 }) === 0 && combinedMaxProfit({ combinedMaxProfit: '5%' }) === 0, 'absent / 0 / non-number = off');
+    assert(validateNumericRanges('settings', { combinedMaxProfit: 20000 }).length === 0, 'valid value accepted');
+    assert(validateNumericRanges('settings', { combinedMaxProfit: -5 }).length === 1 && validateNumericRanges('settings', { combinedMaxProfit: '10%' }).length === 1, 'negative / percent rejected');
     process.exit(process.exitCode ?? 0);
 })();

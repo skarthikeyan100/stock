@@ -79,7 +79,7 @@ When a strategy's max-profit latch trips (own `maxProfit` or `settings.maxProfit
    ```
 4. Confirm `Reset via admin request` in the log, `profitTripped: false` and no `strategyLatches` document for it; report. P&L counting restarts at zero and it may buy again at once; repeat on the next trip.
 
-Ask the user instead for: a `settings.overAllMaxProfit` trip (disables every strategy), or BulkPcr (its reset also clears loss stops).
+Ask the user instead for: a `settings.combinedMaxProfit` trip (disables every strategy), or BulkPcr (its reset also clears loss stops).
 
 ## Restart checklist
 

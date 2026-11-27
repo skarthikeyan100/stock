@@ -1,7 +1,7 @@
 import configService from '../prism/ConfigService';
 
-// The global maxProfit (config.yml `settings.maxProfit`): ONE positive number of rupees, the same for every broker. It applies to EVERY
-// strategy; each strategy instance on each of its brokers is judged separately against it (its own P&L on that broker, not a shared pool).
+// The global maxProfit (config.yml `settings.maxProfit`): ONE positive number of rupees, the same for every broker. It applies to every
+// strategy except the types in NO_MAX_PROFIT_TYPES (globalMaxProfitLatch.ts: RecommendationStrategy); each strategy instance on each of its brokers is judged separately against it (its own P&L on that broker, not a shared pool).
 // A strategy block's own `maxProfit` overrides it for that strategy. Absent / 0 / not a positive number = no global cap. Read at each call,
 // so a config edit applies live.
 export function globalMaxProfit(settings?: Record<string, any> | null): number {

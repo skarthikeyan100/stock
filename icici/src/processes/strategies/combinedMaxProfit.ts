@@ -11,19 +11,22 @@ import { markPrice } from './markPrice';
 import { restingByContract, cappedMarks } from './restingMarks';
 import type { RestingSell } from '../../strategy/restingCover';
 
-// settings.overAllMaxProfit (rupees, optional, absent = off): when the COMBINED day P&L of every strategy on every real broker (realized + open positions at
+// settings.combinedMaxProfit (rupees, optional, absent = off): when the COMBINED day P&L of every strategy on every real broker (realized + open positions at
 // the last tick price, markPrice.ts, trades opened today; the paper broker is not counted) reaches it, the lock-profits action runs once - every strategy is disabled in
 // config.yml and every open long is limit-sold at its live price (disableAllAndLockProfits, the same code as POST /order/lock-profits).
-// One trip per day, durable in Mongo (strategyLatches, ownerType 'OverAllMaxProfit'): re-enabling strategies afterwards does not trip it again
+// One trip per day, durable in Mongo (strategyLatches, ownerType 'CombinedMaxProfit'): re-enabling strategies afterwards does not trip it again
 // the same day. A trip whose lock failed (`locked` false) is retried every cycle.
-export const OVERALL_MAX_PROFIT_OWNER = 'OverAllMaxProfit';
+export const COMBINED_MAX_PROFIT_OWNER = 'CombinedMaxProfit';
+// The ownerType written before the rename of 2026-11-27: a day's trip stored under it still counts (read and marked locked, never newly written),
+// so a restart onto the new name cannot re-arm the limit.
+export const LEGACY_COMBINED_MAX_PROFIT_OWNER = 'OverAllMaxProfit';
 const INTERVAL_MS = 60_000; // one check a minute (user's rule 2026-11-25)
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const nonFiniteAlert = new NonFiniteAlert();
 let running = false;
 
-export function overAllMaxProfit(settings?: Record<string, any> | null): number {
-    const v = (settings ?? (configService.getConfig().settings as any))?.overAllMaxProfit;
+export function combinedMaxProfit(settings?: Record<string, any> | null): number {
+    const v = (settings ?? (configService.getConfig().settings as any))?.combinedMaxProfit;
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
@@ -42,18 +45,20 @@ export async function combinedPnl(stats: { trades: any[]; closedTrades: any[] },
     return realized + open.reduce((s, t) => s + (values.get(t)! - num(t.price)) * num(t.quantity), 0);
 }
 
-const latchKey = () => ({ ownerType: OVERALL_MAX_PROFIT_OWNER, userId: 'ALL', scope: 'all', day: localDayKey() });
+const latchKey = () => ({ ownerType: COMBINED_MAX_PROFIT_OWNER, userId: 'ALL', scope: 'all', day: localDayKey() });
+// Today's trip under either name.
+export const trippedLatchFilter = () => ({ ...latchKey(), ownerType: { $in: [COMBINED_MAX_PROFIT_OWNER, LEGACY_COMBINED_MAX_PROFIT_OWNER] }, tripped: true });
 
 async function readLatch(): Promise<{ locked: boolean } | null> {
     const col = Mongo.getInstance()?.db.collection('strategyLatches');
     if (!col) throw new Error('Mongo not connected');
-    const doc: any = await col.findOne(latchKey());
-    return doc?.tripped ? { locked: doc.locked === true } : null;
+    const doc: any = await col.findOne(trippedLatchFilter());
+    return doc ? { locked: doc.locked === true } : null;
 }
 
 async function runOnce(orderClient: OrderClient): Promise<void> {
     if (running || !isWithinTradingWindow()) return;
-    const cap = overAllMaxProfit();
+    const cap = combinedMaxProfit();
     if (!(cap > 0)) return;
     running = true;
     try {
@@ -66,25 +71,25 @@ async function runOnce(orderClient: OrderClient): Promise<void> {
                 const resting = await restingByContract(countedOpen(stats));
                 total = await combinedPnl(await orderClient.stats(), resting);
             }
-            if (!Number.isFinite(total)) { nonFiniteAlert.report('overall:total', `[OverAllMaxProfit] total is ${String(total)} - NOT tripping`); return; }
+            if (!Number.isFinite(total)) { nonFiniteAlert.report('combined:total', `[CombinedMaxProfit] total is ${String(total)} - NOT tripping`); return; }
             if (!(total >= cap)) return;
             const col = Mongo.getInstance()?.db.collection('strategyLatches');
             if (!col) throw new Error('Mongo not connected');
             await col.updateOne(latchKey(), { $set: { tripped: true, locked: false, pnl: total, cap, updatedAt: new Date() } }, { upsert: true }); // durable before anything is sold
-            Log.log(`[OverAllMaxProfit] TRIPPED - combined total=${Math.round(total)} threshold=${cap} - disabling every strategy and locking profits`);
+            Log.log(`[CombinedMaxProfit] TRIPPED - combined total=${Math.round(total)} threshold=${cap} - disabling every strategy and locking profits`);
         } else if (latch.locked) return;
         const res = await disableAllAndLockProfits(orderClient);
         const col = Mongo.getInstance()?.db.collection('strategyLatches');
-        await col?.updateOne(latchKey(), { $set: { locked: true, updatedAt: new Date() } });
-        Log.log(`[OverAllMaxProfit] lock-profits done: disabled ${res.disabledStrategies.length} strategies, locked P&L ${Math.round(num(res.lock?.totalLockedPnl))}`);
+        await col?.updateOne(trippedLatchFilter(), { $set: { locked: true, updatedAt: new Date() } });
+        Log.log(`[CombinedMaxProfit] lock-profits done: disabled ${res.disabledStrategies.length} strategies, locked P&L ${Math.round(num(res.lock?.totalLockedPnl))}`);
     } catch (e) {
-        Log.log('[OverAllMaxProfit] ALERT: cycle failed (retried next cycle):', e);
+        Log.log('[CombinedMaxProfit] ALERT: cycle failed (retried next cycle):', e);
     } finally {
         running = false;
     }
 }
 
-export function startOverAllMaxProfitMonitor(): void {
+export function startCombinedMaxProfitMonitor(): void {
     const client = OrderClient.getInstance();
     setInterval(() => { void runOnce(client); }, INTERVAL_MS).unref?.();
 }

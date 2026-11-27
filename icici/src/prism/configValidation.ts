@@ -105,10 +105,10 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
-    // settings.overAllMaxProfit: combined cap in rupees over every strategy; reaching it runs lock-profits. One positive number; remove the key for none.
-    if (label === 'settings' && obj.overAllMaxProfit !== undefined && obj.overAllMaxProfit !== null) {
-        const m = obj.overAllMaxProfit;
-        if (!(typeof m === 'number' && Number.isFinite(m) && m > 0)) errors.push(`settings.overAllMaxProfit must be a positive number of rupees, e.g. 20000 (got ${JSON.stringify(m)}); remove the key for no overall cap`);
+    // settings.combinedMaxProfit: combined cap in rupees over every strategy; reaching it runs lock-profits. One positive number; remove the key for none.
+    if (label === 'settings' && obj.combinedMaxProfit !== undefined && obj.combinedMaxProfit !== null) {
+        const m = obj.combinedMaxProfit;
+        if (!(typeof m === 'number' && Number.isFinite(m) && m > 0)) errors.push(`settings.combinedMaxProfit must be a positive number of rupees, e.g. 20000 (got ${JSON.stringify(m)}); remove the key for no combined cap`);
     }
 
     // settings.levelRules: per proficiency level (beginner / advanced) the daily, weekly and per-trade loss limits (percent), the starting capital (rupees) and the profit share (percent).

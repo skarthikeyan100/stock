@@ -19,7 +19,7 @@ import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import { exchangeForTsym } from '../util/underlyings';
 import { shouldPokeEod } from '../util/eodClose';
 import { startGlobalMaxProfitMonitor } from './strategies/globalMaxProfit';
-import { startOverAllMaxProfitMonitor } from './strategies/overAllMaxProfit';
+import { startCombinedMaxProfitMonitor } from './strategies/combinedMaxProfit';
 import { recordTick } from './strategies/markPrice';
 
 // Entry point for the `strategies` process. No Prism/Kite dependency at all -
@@ -488,8 +488,8 @@ export async function startStrategiesProcess() {
     void startupReconcile();
     // The global settings.maxProfit for strategies without a profit stop of their own (a no-op while the setting is absent).
     startGlobalMaxProfitMonitor(() => strategies.getList());
-    // settings.overAllMaxProfit: combined P&L of every strategy reaching it runs lock-profits once a day (a no-op while the setting is absent).
-    startOverAllMaxProfitMonitor();
+    // settings.combinedMaxProfit: combined P&L of every strategy reaching it runs lock-profits once a day (a no-op while the setting is absent).
+    startCombinedMaxProfitMonitor();
     startEodClock();
 
     // The trading window is enforced at dispatch (Strategy.receivesEvents), not by clearing `enabled` in memory.

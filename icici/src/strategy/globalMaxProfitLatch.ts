@@ -1,4 +1,5 @@
 import Mongo from '../tools/mongo';
+import configService from '../prism/ConfigService';
 import Log from '../util/Log';
 import { localDayKey } from './dayKey';
 
@@ -9,6 +10,21 @@ import { localDayKey } from './dayKey';
 export const GLOBAL_MAX_PROFIT_OWNER = 'GlobalMaxProfit';
 
 // The paper broker has no global max-profit latch at all: it is never latched, never written, never read (the monitor skips it).
+
+// Strategy types no max-profit limit applies to (user's rule 2026-11-27), neither a block maxProfit nor settings.maxProfit: the monitor never
+// judges them (no trip, no lock sell, no latch) and a latch row stored for one is not read (no entry block, no cancel of a resting buy).
+// settings.combinedMaxProfit is a separate platform-wide limit and still counts them.
+export const NO_MAX_PROFIT_TYPES: ReadonlySet<string> = new Set(['RecommendationStrategy']);
+
+// Is `userId` the instance id of a configured block of such a type?
+export function isMaxProfitExempt(userId: string): boolean {
+    try {
+        return configService.getInstances().some((c) => (c.userId || c.type) === userId && NO_MAX_PROFIT_TYPES.has(c.type));
+    } catch (e) {
+        Log.log(`[GlobalMaxProfit] could not read the configured strategies for ${userId} (treated as under the limit):`, e);
+        return false;
+    }
+}
 
 export async function latchGlobalMaxProfit(userId: string, broker: string, info: { pnl: number; cap: number }): Promise<boolean> {
     if (broker === 'paper') return true; // nothing to persist: a paper broker is never latched
@@ -44,7 +60,7 @@ const cache = new Map<string, { at: number; latched: boolean }>();
 // profit, and a Mongo blip must not stop a strategy from trading; the monitor re-asserts the latch on its next cycle.
 export async function isGlobalMaxProfitLatched(userId: string, broker?: string): Promise<boolean> {
     const k = `${userId}|${broker ?? '*'}`;
-    if (broker === 'paper') return false;
+    if (broker === 'paper' || isMaxProfitExempt(userId)) return false;
     const hit = cache.get(k);
     if (hit && Date.now() - hit.at < CACHE_MS) return hit.latched;
     let latched = false;
@@ -63,6 +79,7 @@ export async function isGlobalMaxProfitLatched(userId: string, broker?: string):
 }
 
 export async function globalMaxProfitLatchedBrokers(userId: string): Promise<string[]> {
+    if (isMaxProfitExempt(userId)) return [];
     try {
         const col = Mongo.getInstance()?.db.collection('strategyLatches');
         if (!col) return [];

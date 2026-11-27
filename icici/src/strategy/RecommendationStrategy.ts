@@ -8,8 +8,6 @@ import { isPastEodClose } from '../util/eodClose';
 import { investmentForBroker, resolveMaxInvestment } from '../prism/configVocabulary';
 import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
-import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
-import { normalizeBrokerName } from '../util/brokerName';
 import { RecState, RecWatch, atmStrike, backAtEntry, hitTarget, nextAction, oppositeRight } from './recommendationCycle';
 
 const DEFAULT_ENTRY_TOLERANCE = 10; // option-price points
@@ -23,11 +21,13 @@ const PENDING_CHECK_MS = 15_000; // how often an overdue order is looked at agai
 //   ant   - the in-app exitMonitor (a bracket/cover order must BE the entry order, it cannot be attached to a filled one).
 //   other - a resting limit sell at the target plus a tick-driven market stop in this strategy.
 // An unfilled (or partly filled) entry is NOT cancelled on a timer: entryTimeoutMinutes (settings or block) is ignored here. It is cancelled at
-// the end of day (and by the global max-profit latch, as for every strategy); a held position is closed at settings.eodCloseTime (global, not a key of this block).
+// the end of day; a held position is closed at settings.eodCloseTime (global, not a key of this block).
 // An entry order still open 5 minutes after placement is logged as an ALERT (broker, contract, filled/ordered, price, order id), once per order,
 // and again only when the quantity filled at the broker has grown (at once for the first filled quantity, then at most every 5 minutes).
 // Target and stop go on booked fills only, and the order process books an order's fill when the order COMPLETES or is CANCELLED: a part filled
 // while the order stays open has no target/stop until then (cancelling the rest at the broker books and protects it).
+// No max-profit limit applies to this strategy (NO_MAX_PROFIT_TYPES in globalMaxProfitLatch.ts): neither settings.maxProfit nor a block maxProfit
+// trips, sells, cancels or blocks anything here. settings.combinedMaxProfit (platform-wide) still counts its trades and disables the block.
 // One recommendation per config block (add another block, with its own userId, for another one). Changing the contract/prices of a
 // block is a new recommendation and is placed once more; the same recommendation is never placed twice on a day, even across restarts.
 // A recommendation arriving while a trade is still open (order or position) is dropped, not held for later. When the trade is finished
@@ -51,7 +51,7 @@ const PENDING_CHECK_MS = 15_000; // how often an overdue order is looked at agai
 //   reverse: false                - true: after the last target (the first trade, or the repeat when repeat is on) wait for the option to fall back to entryPrice,
 //                                   then buy the OPPOSITE right at the ATM strike (market LTP, same distances, sized from maxInvestment); that trade ends the
 //                                   strategy. Default false. Both act only after a target (a stop, end of day or unfilled entry ends the strategy as before).
-//                                   Every re-entry checks the global max-profit latch per broker; end of day ends a pending reverse. Brokers whose trade did not
+//                                   End of day ends a pending reverse. Brokers whose trade did not
 //                                   reach its target drop out; the next step waits until every broker's current trade is over.
 //   startTime: '09:20'            - not placed before this (the EOD close is settings.eodCloseTime)
 export default class RecommendationStrategy extends LimitEntryStrategy {
@@ -60,7 +60,7 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
     private invalidLogged = '';
     private pendingCheckedAt = new WeakMap<Leg, number>();
 
-    // No timeout cancel: a pending entry rests until it fills, the end of day or the max-profit latch. onEntryPending reports it.
+    // No timeout cancel: a pending entry rests until it fills or the end of day. onEntryPending reports it.
     protected entryTimeoutMinutes(): number {
         return 0;
     }
@@ -236,10 +236,6 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         const hit: string[] = [];
         for (const leg of this.legs()) {
             if (!candidates.includes(leg.broker) || leg.status !== 'closed' || !hitTarget(leg) || hit.includes(leg.broker)) continue;
-            if (await isGlobalMaxProfitLatched(this.userId, normalizeBrokerName(leg.broker))) {
-                Log.log(`[${this.logTag}] ${leg.broker}: the global max profit is hit - no repeat / reverse on that broker`);
-                continue;
-            }
             hit.push(leg.broker);
         }
         const action = nextAction(rec.stage, repeat, reverse, hit.length > 0);
@@ -287,14 +283,12 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         if (!rec || !w) return;
         for (const t of w.tokens) watchTokenOnSource('ant', t.token, this, t.exchange); // re-armed after a restart
         if (!w.triggered || this.hasActiveLeg() || !(quote.ltp > 0)) return;
-        const live: string[] = [];
-        for (const b of w.brokers) if (!(await isGlobalMaxProfitLatched(this.userId, normalizeBrokerName(b)))) live.push(b);
+        const live = w.brokers;
         this.unwatchRec(w);
         rec.watch = undefined;
         rec.stage = 2;
         rec.brokers = live;
         this.save();
-        if (live.length === 0) { await this.disableBlock(); return; }
         if (String(w.index).toUpperCase() === 'SENSEX') {
             // The tick driving this strategy is a NIFTY tick and atmStrike() uses a 50 step: a SENSEX reverse would pick a NIFTY-level strike on the SENSEX chain.
             Log.log(`[${this.logTag}] ALERT: reverse on SENSEX is not supported (no SENSEX spot tick / 100-point strike step here) - NOT buying; the strategy is finished`);

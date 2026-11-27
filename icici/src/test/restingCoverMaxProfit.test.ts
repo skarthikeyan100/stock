@@ -4,7 +4,7 @@
  *   - restingCover helpers (excess, shortfall, partial fills, state files without the record, reconcile with / without a stored price)
  *   - SimpleContinuous, ScaledHedged, ExperimentalScaled: no false trip; uncovered quantity still counts at the LTP; CE and PE; several legs;
  *     placement in flight; clamped placement; restart / adopted legs; an already-tripped latch stays
- *   - the global and overall monitors: pending sells and a Kite GTT target cap the total; no price = LTP; a fill between the reads is not counted twice
+ *   - the global and combined monitors: pending sells and a Kite GTT target cap the total; no price = LTP; a fill between the reads is not counted twice
  * Run: npx tsc, then: node ./dist/test/restingCoverMaxProfit.test.js
  */
 import OrderClient from '../processes/strategies/OrderClient';
@@ -13,7 +13,7 @@ import ScaledHedgedStrategy from '../strategy/ScaledHedgedStrategy';
 import ExperimentalScaledStrategy from '../strategy/ExperimentalScaledStrategy';
 import { restingExcess, legRestingSells, noteRestingPlaced, noteRestingFilled, restingFromPending } from '../strategy/restingCover';
 import { checkOne } from '../processes/strategies/globalMaxProfit';
-import { combinedPnl } from '../processes/strategies/overAllMaxProfit';
+import { combinedPnl } from '../processes/strategies/combinedMaxProfit';
 import { restingByContract } from '../processes/strategies/restingMarks';
 import { recordTick, __setLiveFetch } from '../processes/strategies/markPrice';
 import Mongo from '../tools/mongo';
@@ -227,7 +227,7 @@ const near = (a: number, b: number) => Math.abs(a - b) < 0.01;
         const z = tripSells().find((c) => c.args[1].tradingSymbol === 'Z');
         assert(!!z && z.args[1].price === 123.5, `Z locks at max(clear 106.95, floor 123.50): ${z?.args[1].price}`);
 
-        console.log('overall monitor');
+        console.log('combined monitor');
         const stats = { trades: [row()], closedTrades: [] };
         assert(near(await combinedPnl(stats), 455 * 11.5), 'raw total');
         assert(near(await combinedPnl(stats, await restingByContract(stats.trades)), 4550), 'capped total');

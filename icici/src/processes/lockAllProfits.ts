@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import configService from '../prism/ConfigService';
 import type OrderClient from './strategies/OrderClient';
 
-// The lock-profits action behind POST /order/lock-profits and the overAllMaxProfit monitor (one code path for both): (1) writes enabled: false on every
+// The lock-profits action behind POST /order/lock-profits and the combinedMaxProfit monitor (one code path for both): (1) writes enabled: false on every
 // enabled strategy to config.yml (one atomic write, hot-reloaded by every process), so nothing can buy behind the lock; a write that fails stops
 // here with nothing sold. (2) The order process cancels resting buys and limit-sells every open long at its live price (orderProcess.ts's lockProfits).
 export async function disableAllAndLockProfits(orderClient: OrderClient, opts: { broker?: string; reprice?: boolean } = {}): Promise<{ disabledStrategies: string[]; lock: any }> {

@@ -2,7 +2,7 @@ import Log from '../../util/Log';
 import { exchangeForTsym } from '../../util/underlyings';
 import OrderClient from './OrderClient';
 
-// The price an open position is valued at by the profit monitors (globalMaxProfit.ts, overAllMaxProfit.ts). Order of preference (user's rule 2026-11-25:
+// The price an open position is valued at by the profit monitors (globalMaxProfit.ts, combinedMaxProfit.ts). Order of preference (user's rule 2026-11-25:
 // tick price wherever possible, a live ANT call only when no tick exists, and never a 429):
 //   1. the last option TICK this process received for the token (recordTick, fed by the tick handler in strategiesProcess.ts: every token a strategy
 //      holds or watches ticks here), no network call;
