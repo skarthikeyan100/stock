@@ -307,7 +307,7 @@ export async function enterPosition(
         Log.log(`[order] waitForFill failed for ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
         try {
             entryPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
-            Log.log(`[order] REST fallback confirmed fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+            Log.log(`[order] REST fallback confirmed fill for ${tradingSymbol} at ${entryPrice} for ${userId} (not confirmed during the order-notify wait; confirmed by REST order history)`);
         } catch (fallbackErr: any) {
             // The history poll could not confirm a fill, so the order may still be resting
             // at the broker. Resolve the real outcome before recording anything.
@@ -454,7 +454,7 @@ export async function enterShortPosition(userId: string, tradingSymbol: string, 
         Log.log(`[order] [BUTTERFLY] waitForFill failed for short-entry ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
         try {
             entryPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
-            Log.log(`[order] [BUTTERFLY] REST fallback confirmed short-entry fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+            Log.log(`[order] [BUTTERFLY] REST fallback confirmed short-entry fill for ${tradingSymbol} at ${entryPrice} for ${userId} (not confirmed during the order-notify wait; confirmed by REST order history)`);
         } catch (fillErr) {
             // Still unresolved: the resting sell-to-open could fill later, naked and unrecorded. Settle it the way enterPosition
             // settles an unconfirmed buy (trade book, else cancel and re-read), and book only what was actually sold. Throws for
@@ -505,7 +505,7 @@ export async function buyToClosePosition(userId: string, tradingSymbol: string, 
     } catch (waitErr) {
         Log.log(`[order] [BUTTERFLY] waitForFill failed for buy-to-close ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
         exitPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
-        Log.log(`[order] [BUTTERFLY] REST fallback confirmed buy-to-close fill for ${tradingSymbol} at ${exitPrice} for ${userId} (order-notify push was missed)`);
+        Log.log(`[order] [BUTTERFLY] REST fallback confirmed buy-to-close fill for ${tradingSymbol} at ${exitPrice} for ${userId} (not confirmed during the order-notify wait; confirmed by REST order history)`);
     }
 
     const trade = new Trade();
@@ -1216,7 +1216,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
                 // Not confirmed by the push. Ask the broker once - never record a sale on a guessed price.
                 const st = await ANT.getInstance().getOrderStatus(exitOrderNo).catch(() => null);
                 if (st?.status === 'COMPLETE' && st.fillPrice && st.fillPrice > 0) {
-                    Log.log(`[order] squareOffOnAnt: push missed but broker confirms COMPLETE for ${exitOrderNo} at ${st.fillPrice}`);
+                    Log.log(`[order] squareOffOnAnt: not confirmed during the order-notify wait, REST order status shows COMPLETE for ${exitOrderNo} at ${st.fillPrice}`);
                     trade.price = st.fillPrice;
                 } else {
                     confirmed = false;
