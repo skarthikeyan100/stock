@@ -16,8 +16,12 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 /** The canonical contract string manualBuy takes: NIFTY_24150_CE, TCS_3500_PE. */
 export const canonicalContract = (underlying: string, strike: number, right: 'CE' | 'PE') => `${underlying.toUpperCase()}_${strike}_${right}`;
 
-/** True when a trade of this contractor is OPEN now (a trade opened and already closed today does not count - only open trades are checked). */
+// Contractors (by email) with a buy still waiting for its fill in this process: it can wait BUY_FILL_WAIT and is not a trade yet.
+const buying = new Set<string>();
+
+/** True when a trade of this contractor is OPEN now (a trade opened and already closed today does not count - only open trades are checked), or a buy of theirs is still waiting for its fill. */
 export async function tradeInProgress(c: Contractor): Promise<boolean> {
+    if (buying.has(c.email)) return true;
     const stats = await OrderClient.getInstance().stats(c.email);
     return (stats.trades ?? []).some((t: any) => t.user === c.email && t.open !== false);
 }
@@ -32,10 +36,15 @@ export async function placeContractorBuy(c: Contractor, o: { underlying: string;
     if (user.enabled === false) throw new Error(`the account of ${c.email} is disabled`);
     // The order process sizes and gates by the cached settings of the user: make sure this contractor's are there (and flagged as a contractor) before the buy.
     await pushUserToOrderProcess(user, 'contractor order');
-    return OrderClient.getInstance().manualBuy(c.email, {
-        contract: canonicalContract(o.underlying, o.strike, o.right), price: o.price, ...(o.limit ? { limitPrice: o.price } : {}),
-        targetPoints: round2(o.target - o.price), stopLossPoints: round2(o.price - o.stop),
-        ...(o.contractorBudget ? { contractorBudget: o.contractorBudget } : {}),
-    } as any);
+    buying.add(c.email);
+    try {
+        return await OrderClient.getInstance().manualBuy(c.email, {
+            contract: canonicalContract(o.underlying, o.strike, o.right), price: o.price, ...(o.limit ? { limitPrice: o.price } : {}),
+            targetPoints: round2(o.target - o.price), stopLossPoints: round2(o.price - o.stop),
+            ...(o.contractorBudget ? { contractorBudget: o.contractorBudget } : {}),
+        } as any);
+    } finally {
+        buying.delete(c.email);
+    }
 }
 

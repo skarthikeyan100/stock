@@ -1,5 +1,46 @@
 import OrderClient from '../processes/strategies/OrderClient';
 import type { BrokerName } from '../util/brokerName';
+import { BUY_FILL_WAIT, BUY_ORDER_OVERHEAD_MS } from '../util/fillWait';
+import Log from '../util/Log';
+
+// A buy waits up to BUY_FILL_WAIT for its fill. The tick handler that placed it must not: one strategy's ticks are handled one after another
+// (per index, per option token), so a stop loss, a sell retry or the EOD close would queue behind the buy. The handler waits a moment (a prompt
+// fill is dealt with in line) and returns; `work` carries on under the caller's own in-flight guard. An object so a unit test can change it.
+export const BUY_TICK_HOLD = { ms: 2000 };
+export async function holdTickBriefly(work: Promise<unknown>, tag: string): Promise<void> {
+    let returned = false;
+    let timer: NodeJS.Timeout | undefined;
+    const watched = work.then(() => undefined, (e) => {
+        if (!returned) throw e;
+        Log.log(`${tag} ALERT: a buy (or what follows it) failed:`, e);
+    });
+    try {
+        await Promise.race([watched, new Promise<void>((r) => { timer = setTimeout(r, BUY_TICK_HOLD.ms); })]);
+    } finally {
+        returned = true;
+        if (timer) clearTimeout(timer);
+    }
+}
+
+// A buy recorded as in flight by a process that stopped in the middle of its wait: true while it still rests inside that wait. It is left alone
+// until then (the order process cancels it when the wait is over) and settled from the broker afterwards.
+export async function buyStillWaiting(userId: string, broker: BrokerName, tradingSymbol: string, recordedAt: number): Promise<boolean> {
+    if (Date.now() >= recordedAt + BUY_FILL_WAIT.ms + BUY_ORDER_OVERHEAD_MS) return false;
+    return (await OrderClient.getInstance().getPendingBuys(userId, broker, tradingSymbol)).length > 0;
+}
+
+// Cancels the buys a strategy is waiting on, when it stops for the day (EOD, max profit): one still waiting could otherwise open a position up
+// to BUY_FILL_WAIT later. The waiting buy call then returns what had filled.
+export async function cancelBuysInFlight(userId: string, broker: BrokerName, tsyms: string[], tag: string): Promise<void> {
+    for (const tradingSymbol of tsyms) {
+        try {
+            const res = await OrderClient.getInstance().cancelRestingLimitBuys(userId, { tradingSymbol, broker });
+            if (res.cancelFailed) Log.log(`${tag} ALERT: could not cancel the waiting buy of ${tradingSymbol}, retrying`);
+        } catch (e) {
+            Log.log(`${tag} ALERT: cancelling the waiting buy of ${tradingSymbol} failed, retrying:`, e);
+        }
+    }
+}
 
 export type UnconfirmedBuyResolution = { kind: 'none' } | { kind: 'filled'; qty: number; price: number } | { kind: 'unknown'; why: string };
 

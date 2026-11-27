@@ -5,7 +5,7 @@ import bookkeeping from './bookkeeping';
 import { attachProtection } from './attachProtection';
 
 // Resting limit ENTRIES with a target and stop-loss to attach once they fill (a contractor's approved recommendation, and the admin's mirror of it).
-// A plain manualBuy waits about a minute for its fill and then cancels, which is wrong for "buy at the recommended price": that order must be
+// A plain manualBuy waits BUY_FILL_WAIT (5 min) for its fill and then cancels, which is wrong for "buy at the recommended price": that order must be
 // allowed to rest. The entry is placed as a tracked pending limit buy (pendingLimitOrders.ts: persisted in Mongo, polled, its fill booked even after a
 // restart) and the exits wait here, in Mongo `entryExits` (one row per resting order). When the fill is booked (bookkeeping.onFill) the row is
 // claimed and attachProtection puts the target/stop on the position: a broker GTT on Kite, the in-app exit monitor otherwise. Not an in-memory control:

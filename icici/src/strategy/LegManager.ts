@@ -15,6 +15,7 @@ import { toPercentNumber } from '../prism/percentConfig';
 import { Strategy } from './strategy';
 import { localDayKey } from './dayKey';
 import { LegBrokerOps, PartialSellError, defaultLegOps, dryRunOps } from './LegBrokerOps';
+import { holdTickBriefly } from './unconfirmedBuy';
 import { TripGuard, TRIP_FILL_WAIT_MS } from './maxProfitLock';
 import { heldQuantity } from './openTrades';
 import { normalizeBrokerName } from '../util/brokerName';
@@ -226,6 +227,7 @@ export class LegManager {
     // the owning strategy's T1 gate re-enters (real 2026-10-27 09:51 bug: a fresh T1 entry stacked on the refill,
     // leaving an untracked 65-qty position). Held until the refill is registered (or the close failed/finished).
     private closesInFlight = 0;
+    private buysWaiting = 0; // spawn / average buys in flight (see countBuy)
     // A mass close (max-profit / max-loss / EOD) is running: its legs are already deleted from legsByToken before their sell await, so
     // without this a spawn/average/entry queued behind it saw an idle manager and bought mid-close (2026-11-02 10:24:47: 520 CE bought
     // while everything was being sold). Blocks new orders from the moment the close starts.
@@ -1014,7 +1016,7 @@ export class LegManager {
     }
 
     isIdle(): boolean {
-        return this.legsByToken.size === 0 && this.pendingReEntries.size === 0 && !this.deferredRootRefill && this.closesInFlight === 0;
+        return this.legsByToken.size === 0 && this.pendingReEntries.size === 0 && !this.deferredRootRefill && this.closesInFlight === 0 && this.buysWaiting === 0;
     }
 
     isCapitalGateTripped(): boolean {
@@ -1252,13 +1254,21 @@ export class LegManager {
         const level = Math.min(maxLevels, Math.floor(adverseMove / D));
         if (level >= 1 && level <= maxLevels) {
             const hedgeStartLevel = cfg.hedgeStartLevel ?? 1;
+            // Both reserve their slot synchronously and their buys queue on opLock. Each may wait minutes for its fill: the tick handler
+            // returns meanwhile (holdTickBriefly), so this leg's target and square-off are not held up.
             if (level >= hedgeStartLevel && !leg.childByLevel.has(level)) {
-                await this.trySpawnLevel(leg, level);
+                await holdTickBriefly(this.countBuy(this.trySpawnLevel(leg, level)), `[${this.deps.ownerType}]`);
             }
             if (!leg.averagedLevels.has(level)) {
-                await this.tryAverageLevel(leg, level, ltp);
+                await holdTickBriefly(this.countBuy(this.tryAverageLevel(leg, level, ltp)), `[${this.deps.ownerType}]`);
             }
         }
+    }
+
+    // Not idle while a spawn / average buy still waits for its fill: its leg can close meanwhile, and a new root entry must not stack on it.
+    private countBuy(buy: Promise<void>): Promise<void> {
+        this.buysWaiting++;
+        return buy.finally(() => { this.buysWaiting--; });
     }
 
     private async trySpawnLevel(leg: Leg, level: number): Promise<void> {

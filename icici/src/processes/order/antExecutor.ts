@@ -16,14 +16,34 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { manualBuyChunked, squareOffAutoChunked } from './chunkedOrder';
 import { neverShortSellable } from './BrokerExecutor';
-import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders, silenceListenersOfPendingAntLimitOrders, antRestingSells } from './pendingAntLimitOrders';
+import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders, silenceListenersOfPendingAntLimitOrders, antRestingSells, awaitAntBuy } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
-import { fillWaitPlan } from '../../util/fillWait';
+import { fillWaitPlan, pushOrPause, BUY_FILL_WAIT } from '../../util/fillWait';
 import { exchangeForIndex } from '../../util/underlyings';
 import { markNotPlaced } from '../../util/notPlaced';
 
-// Entry fill wait (push + REST fallback) bounded below the IPC timeout: the old 60 s push + 12 x 5 s poll (~120 s) outran the strategy's 90 s.
+// The push-only stretch of every fill wait, and the REST fallback of the short (sell) waits, bounded below the IPC timeout: the old 60 s push
+// + 12 x 5 s poll (~120 s) outran the strategy's 90 s. A buy then polls on until fillWait.BUY_FILL_WAIT (waitForAntBuyFill).
 const ANT_FILL_PLAN = fillWaitPlan();
+
+// A buy's fill wait: the order-notify push first, then the order history polled with the push still listened to, until BUY_FILL_WAIT has
+// passed. Throws on a terminal REJECTED / CANCELLED status, or after the whole wait.
+async function waitForAntBuyFill(ant: ANT, orderNo: string, label: string, logTag = ''): Promise<number> {
+    const started = Date.now();
+    const notify = (ms: number) => AntOrderNotifyStream.getInstance().waitForFill(orderNo, ms);
+    try {
+        const price = await notify(Math.min(ANT_FILL_PLAN.pushMs, BUY_FILL_WAIT.ms));
+        Log.log(`[order] ${logTag}Filled ${label} at ${price}`);
+        return price;
+    } catch (waitErr) {
+        Log.log(`[order] ${logTag}waitForFill failed for ${label} order ${orderNo} - falling back to REST fill check:`, waitErr);
+    }
+    let pushed = false;
+    const price = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs, { until: started + BUY_FILL_WAIT.ms, pause: pushOrPause(notify, () => { pushed = true; }) });
+    Log.log(pushed ? `[order] ${logTag}Filled ${label} at ${price} (order-notify push)`
+        : `[order] ${logTag}REST fallback confirmed fill for ${label} at ${price} (not confirmed during the order-notify wait; confirmed by REST order history)`);
+    return price;
+}
 
 // AliceBlue/ANT execution, mirroring kiteExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -137,7 +157,8 @@ async function resolveUnconfirmedAntBuy(
             throw manualReview(`order history reports ${statusFilledQty} filled but trade book lists none`);
         }
         Log.log(`[order] ANT order ${orderNo} confirmed unfilled after cancel`);
-        throw pollErr;
+        // The order is over with nothing filled (PendingOrderTracker.awaitBuy takes it off the pending list).
+        throw pollErr && typeof pollErr === 'object' ? Object.assign(pollErr, { orderTerminal: true }) : pollErr;
     }
     return after;
 }
@@ -283,6 +304,8 @@ export async function enterPosition(
     // Push-based, not polled - resolves as soon as the order-notify websocket
     // delivers a COMPLETE status for this order (see AntOrderNotifyStream.ts).
     //
+    // The wait (waitForAntBuyFill) lasts up to BUY_FILL_WAIT before the order is cancelled.
+    //
     // BUG FIX (orphaned broker position on fill-notify failure): the
     // order-notify WS push can be missed even though the order actually
     // filled at the broker (see AntOrderNotifyStream.ts:40-46's documented,
@@ -298,28 +321,22 @@ export async function enterPosition(
     // ANT.ts) - before giving up. Only if the REST fallback ALSO fails to
     // find a COMPLETE fill do we treat the order as genuinely not filled and
     // let the error propagate, exactly as before.
-    let entryPrice: number;
-    let filledQuantity = quantity;
-    try {
-        entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo, ANT_FILL_PLAN.pushMs);
-        Log.log(`[order] Filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
-    } catch (waitErr) {
-        Log.log(`[order] waitForFill failed for ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
+    const settle = async (): Promise<Trade> => {
+        let entryPrice: number;
+        let filledQuantity = quantity;
         try {
-            entryPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
-            Log.log(`[order] REST fallback confirmed fill for ${tradingSymbol} at ${entryPrice} for ${userId} (not confirmed during the order-notify wait; confirmed by REST order history)`);
+            entryPrice = await waitForAntBuyFill(ant, orderNo, `${tradingSymbol} (${userId})`);
         } catch (fallbackErr: any) {
-            // The history poll could not confirm a fill, so the order may still be resting
+            // The wait could not confirm a fill, so the order may still be resting
             // at the broker. Resolve the real outcome before recording anything.
             // mayCancel is true for a bracket/cover parent too: the entry is a passive limit (best bid), so an unfilled parent is the normal
             // case, and leaving it resting meant it could fill later with broker-side legs the platform never tracked. resolveUnconfirmedAntBuy
             // re-reads the trade book after the cancel and raises manual review if it filled in the race.
             const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, true, fallbackErr).catch((e: any) => {
-                // Outcome not established (cancel failed, never terminal, trade book unreadable): a plain order goes on the pending poller, so a
-                // strategy's cancelRestingLimitBuys finds it (a failed cancel must not read as "nothing rests" and be bought again) and a late fill
-                // is booked. Not a bracket / cover parent: the poller would book it without its broker-side legs.
+                // Outcome not established (cancel failed, never terminal, trade book unreadable): a plain order stays on the pending poller
+                // (awaitAntBuy), so a strategy's cancelRestingLimitBuys finds it (a failed cancel must not read as "nothing rests" and be bought
+                // again) and a late fill is booked. Not a bracket / cover parent: the poller would book it without its broker-side legs.
                 if (e?.orderMayBeLive && !useBracket && !useCover) {
-                    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Buy', product: marketEntry?.product, quiet: true });
                     Log.log(`[order] ALERT: ANT buy ${orderNo} (${tradingSymbol}, ${userId}) may still be live - left on the pending poller (a late fill is booked without target / stop), check the broker`);
                 }
                 throw e;
@@ -328,101 +345,104 @@ export async function enterPosition(
             filledQuantity = resolved.quantity;
             Log.log(`[order] unconfirmed ANT buy ${orderNo} resolved: ${filledQuantity}/${quantity} filled @ ${entryPrice} for ${userId}`);
         }
-    }
 
-    const trade = new Trade();
-    trade.tsym = tradingSymbol;
-    trade.token = instrumentId;
-    trade.quantity = filledQuantity;
-    trade.price = entryPrice;
-    trade.lastTradePrice = entryPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.user = userId;
-    trade.broker = 'ant';
-    trade.brokerOrderId = orderNo;
-    if (marketEntry?.product) trade.product = marketEntry.product;
+        const trade = new Trade();
+        trade.tsym = tradingSymbol;
+        trade.token = instrumentId;
+        trade.quantity = filledQuantity;
+        trade.price = entryPrice;
+        trade.lastTradePrice = entryPrice;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.user = userId;
+        trade.broker = 'ant';
+        trade.brokerOrderId = orderNo;
+        if (marketEntry?.product) trade.product = marketEntry.product;
 
-    if (useCover || (targetPoints > 0 && stopLossPoints > 0)) {
-        // Tick-rounded for consistency with the Kite path and with
-        // whatever exitMonitor/frontend display expects - AliceBlue itself
-        // computes the actual bracket/cover trigger prices server-side from
-        // targetLegPrice/slLegPrice point offsets (see placeBracketOrder/
-        // placeCoverOrder), not from an absolute price we send, so there's no
-        // equivalent broker-rejection risk here today; this is purely
-        // local-field hygiene.
-        // A fill resolved from the trade book can carry price 0: stop/target derived from it would be negative/nonsense.
-        if (!(entryPrice > 0)) {
-            Log.log(`[order] ALERT: ${tradingSymbol} entry for ${userId} filled ${filledQuantity} but its price is unusable (${entryPrice}) - no stop/target set locally; manual review required.`);
-        } else {
-            trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
-            if (!useCover) {
-                // Cover orders carry no target leg - nothing to record.
-                trade.targetPoints = targetPoints;
-                trade.targetPrice = roundToTick(entryPrice + targetPoints);
+        if (useCover || (targetPoints > 0 && stopLossPoints > 0)) {
+            // Tick-rounded for consistency with the Kite path and with
+            // whatever exitMonitor/frontend display expects - AliceBlue itself
+            // computes the actual bracket/cover trigger prices server-side from
+            // targetLegPrice/slLegPrice point offsets (see placeBracketOrder/
+            // placeCoverOrder), not from an absolute price we send, so there's no
+            // equivalent broker-rejection risk here today; this is purely
+            // local-field hygiene.
+            // A fill resolved from the trade book can carry price 0: stop/target derived from it would be negative/nonsense.
+            if (!(entryPrice > 0)) {
+                Log.log(`[order] ALERT: ${tradingSymbol} entry for ${userId} filled ${filledQuantity} but its price is unusable (${entryPrice}) - no stop/target set locally; manual review required.`);
+            } else {
+                trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
+                if (!useCover) {
+                    // Cover orders carry no target leg - nothing to record.
+                    trade.targetPoints = targetPoints;
+                    trade.targetPrice = roundToTick(entryPrice + targetPoints);
+                }
+            }
+
+            if (useBracket || useCover) {
+                // The broker (not this process) watches price after this - kept
+                // on the trade so squareOffOnAnt knows to exit via exitBracketOrder.
+                trade.antOrderNo = orderNo;
+                // Nothing else keeps trade.lastTradePrice fresh after entry - register
+                // watch-only so the frontend's live P&L still moves with the market
+                // instead of freezing at the fill price (the bracket/cover order
+                // itself still owns the actual exit).
+                if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
+            } else if (trade.token) {
+                exitMonitor.registerTrade(trade, exchange, 'ant');
+            } else {
+                Log.log(`[order] useGTT=false for ${userId} but trade has no token (${trade.tsym}) - exit will not be monitored`);
+            }
+        } else if (orderMode === 'target-only' && (targetPoints > 0 || marketEntry)) {
+            // Explicit opt-in only - gated on orderMode, not just "targetPoints>0
+            // && stopLossPoints<=0", so this doesn't silently change behavior for
+            // any OTHER existing/future caller of enterPosition that happens to
+            // pass that same point combination without meaning it (e.g. a
+            // per-user stopLossPriceDiff=0 config through the generic
+            // AntExecutor.buy path) - only a caller that explicitly asks for
+            // 'target-only' gets this.
+            //
+            // The caller (e.g. TopStockOptionsOpeningGapStrategy) places its OWN
+            // separate resting exit order right after this call returns - that
+            // resting order is the sole actual exit, so record targetPoints/
+            // targetPrice (restore-time ground truth per restoreOpenTradesForTsym's
+            // documented invariant) BEFORE recordFill below, and register
+            // watch-only only: an active (non-watch-only) registration would let
+            // exitMonitor's own hitTarget trigger fire a SECOND, competing
+            // square-off once ltp crosses targetPrice, racing the caller's
+            // already-resting order.
+            //
+            // marketEntry callers pass no pre-trade targetPoints (no pre-trade option
+            // LTP is fetched any more) - the target is instead sized here from the
+            // real fill price: 0.25 delta x 1% of the underlying's open, capped at 100%
+            // of the premium actually paid.
+            //
+            // entryPrice<=0 guard: resolveUnconfirmedAntBuy's trade-book fallback (above)
+            // is documented elsewhere as an unverified best-guess shape - if it ever
+            // returns avgPrice=0 for a nonzero filledQuantity, computing a target from it
+            // would set targetPrice=0 and leave the caller (e.g.
+            // TopStockOptionsOpeningGapStrategy.enterLeg) to place a live resting SELL at
+            // price 0. Skip setting a target entirely in that case (same "no target"
+            // outcome the old targetPoints<=0 path already produced) and ALERT instead -
+            // the caller must check trade.targetPrice before placing its own resting sell.
+            if (marketEntry && !(entryPrice > 0)) {
+                Log.log(`[order] ALERT: ${tradingSymbol} resolved entryPrice=${entryPrice} for ${userId} - buy filled but price is unusable; skipping target so no sell is placed at a bad price. Position is LIVE and UNPROTECTED - manual review required.`);
+            } else {
+                const effectiveTargetPoints = marketEntry
+                    ? Math.min(0.0025 * marketEntry.underlyingOpen, entryPrice)
+                    : targetPoints;
+                trade.targetPoints = effectiveTargetPoints;
+                trade.targetPrice = roundToTick(entryPrice + effectiveTargetPoints);
+                if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
             }
         }
 
-        if (useBracket || useCover) {
-            // The broker (not this process) watches price after this - kept
-            // on the trade so squareOffOnAnt knows to exit via exitBracketOrder.
-            trade.antOrderNo = orderNo;
-            // Nothing else keeps trade.lastTradePrice fresh after entry - register
-            // watch-only so the frontend's live P&L still moves with the market
-            // instead of freezing at the fill price (the bracket/cover order
-            // itself still owns the actual exit).
-            if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
-        } else if (trade.token) {
-            exitMonitor.registerTrade(trade, exchange, 'ant');
-        } else {
-            Log.log(`[order] useGTT=false for ${userId} but trade has no token (${trade.tsym}) - exit will not be monitored`);
-        }
-    } else if (orderMode === 'target-only' && (targetPoints > 0 || marketEntry)) {
-        // Explicit opt-in only - gated on orderMode, not just "targetPoints>0
-        // && stopLossPoints<=0", so this doesn't silently change behavior for
-        // any OTHER existing/future caller of enterPosition that happens to
-        // pass that same point combination without meaning it (e.g. a
-        // per-user stopLossPriceDiff=0 config through the generic
-        // AntExecutor.buy path) - only a caller that explicitly asks for
-        // 'target-only' gets this.
-        //
-        // The caller (e.g. TopStockOptionsOpeningGapStrategy) places its OWN
-        // separate resting exit order right after this call returns - that
-        // resting order is the sole actual exit, so record targetPoints/
-        // targetPrice (restore-time ground truth per restoreOpenTradesForTsym's
-        // documented invariant) BEFORE recordFill below, and register
-        // watch-only only: an active (non-watch-only) registration would let
-        // exitMonitor's own hitTarget trigger fire a SECOND, competing
-        // square-off once ltp crosses targetPrice, racing the caller's
-        // already-resting order.
-        //
-        // marketEntry callers pass no pre-trade targetPoints (no pre-trade option
-        // LTP is fetched any more) - the target is instead sized here from the
-        // real fill price: 0.25 delta x 1% of the underlying's open, capped at 100%
-        // of the premium actually paid.
-        //
-        // entryPrice<=0 guard: resolveUnconfirmedAntBuy's trade-book fallback (above)
-        // is documented elsewhere as an unverified best-guess shape - if it ever
-        // returns avgPrice=0 for a nonzero filledQuantity, computing a target from it
-        // would set targetPrice=0 and leave the caller (e.g.
-        // TopStockOptionsOpeningGapStrategy.enterLeg) to place a live resting SELL at
-        // price 0. Skip setting a target entirely in that case (same "no target"
-        // outcome the old targetPoints<=0 path already produced) and ALERT instead -
-        // the caller must check trade.targetPrice before placing its own resting sell.
-        if (marketEntry && !(entryPrice > 0)) {
-            Log.log(`[order] ALERT: ${tradingSymbol} resolved entryPrice=${entryPrice} for ${userId} - buy filled but price is unusable; skipping target so no sell is placed at a bad price. Position is LIVE and UNPROTECTED - manual review required.`);
-        } else {
-            const effectiveTargetPoints = marketEntry
-                ? Math.min(0.0025 * marketEntry.underlyingOpen, entryPrice)
-                : targetPoints;
-            trade.targetPoints = effectiveTargetPoints;
-            trade.targetPrice = roundToTick(entryPrice + effectiveTargetPoints);
-            if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
-        }
-    }
-
-    await bookkeeping.recordFill(trade);
-    return trade;
+        await bookkeeping.recordFill(trade);
+        return trade;
+    };
+    // Bracket / cover parents are not put on the pending list: the poller would book them without their broker-side legs.
+    if (useBracket || useCover) return settle();
+    return awaitAntBuy({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, product: marketEntry?.product }, settle);
 }
 
 // ButterflyStrategy's narrow sell-to-open exception ONLY. `enterPosition` above hardcodes
@@ -498,14 +518,21 @@ export async function buyToClosePosition(userId: string, tradingSymbol: string, 
         price: limitPrice,
     });
 
+    // A buy: waited for BUY_FILL_WAIT. Still unconfirmed: settle it as enterPosition does (trade book, else cancel and re-read), so no order
+    // is left resting untracked, and book only what was actually bought back. Throws when nothing filled, or for manual review.
     let exitPrice: number;
     try {
-        exitPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo, ANT_FILL_PLAN.pushMs);
-        Log.log(`[order] [BUTTERFLY] Buy-to-close filled ${tradingSymbol} at ${exitPrice} for ${userId}`);
-    } catch (waitErr) {
-        Log.log(`[order] [BUTTERFLY] waitForFill failed for buy-to-close ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
-        exitPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
-        Log.log(`[order] [BUTTERFLY] REST fallback confirmed buy-to-close fill for ${tradingSymbol} at ${exitPrice} for ${userId} (not confirmed during the order-notify wait; confirmed by REST order history)`);
+        exitPrice = await waitForAntBuyFill(ant, orderNo, `buy-to-close ${tradingSymbol} (${userId})`, '[BUTTERFLY] ');
+    } catch (fillErr) {
+        const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, true, fillErr).catch((e: any) => {
+            if (e?.orderMayBeLive) Log.log(`[order] ALERT: [BUTTERFLY] ANT buy-to-close ${orderNo} (${tradingSymbol}, ${userId}) may still be live and is not tracked - check the broker`);
+            throw e;
+        });
+        if (!(resolved.quantity > 0 && resolved.avgPrice > 0)) {
+            throw Object.assign(new Error(`ANT buy-to-close ${orderNo} filled ${resolved.quantity} with no usable price - manual review required`), { fillStateUnknown: true });
+        }
+        exitPrice = resolved.avgPrice;
+        quantity = resolved.quantity;
     }
 
     const trade = new Trade();

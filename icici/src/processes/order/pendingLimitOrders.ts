@@ -101,3 +101,6 @@ export const endCancelOfPendingLimitOrders = tracker.endCancel;
 export const silenceListenersOfPendingLimitOrders = tracker.silenceListeners;
 export const loadPendingLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingLimitOrders = tracker.poll;
+// A buy an executor waits for (see PendingOrderTracker.awaitBuy).
+export const awaitKiteBuy = tracker.awaitBuy;
+export const isHeldKiteOrder = tracker.isHeld;

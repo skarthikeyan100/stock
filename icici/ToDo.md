@@ -130,3 +130,5 @@ This file is a snapshot of pending/in-progress work, kept current by hand (there
 - **Breeze cancelled-order terminal fix (2026-11-25, code done, NOT live, needs a trading process restart after market hours).** Status-based terminal test in `getBreezeOrderFillInfo`; see `open-review-items.md` (last item). SimpleContinuousStrategy-Breeze latched at 11:53 stays latched until a strategy reset (trader/user decision).
 
 - **NEVER-SHORT guard, same-contract / GTT root cause (2026-11-25, code done, NOT live, needs an order/trading process restart after market hours).** See `open-review-items.md` 139: merged-row extra GTTs are now polled and booked as the platform's own sells, duplicate exits no longer ALERT, every trip carries a cause class, owner-aware cap per (broker account, contract). Open there: Breeze resting tracker keeping sells that no longer exist (11-13 / 11-16).
+
+- 2026-11-27: buy fill wait is 5 minutes on every broker (sells unchanged); open-review-items 173 and 174 fixed; restart of trading and frontend pending; open points in open-review-items 176. Tests not run (updated: unresolvedEntryBuyTracked, orderTimeoutBudget).

@@ -12,14 +12,17 @@ import bookkeeping from '../processes/order/bookkeeping';
 import { enterPosition } from '../processes/order/antExecutor';
 import { getExecutorByBroker } from '../processes/order/brokerExecutors';
 import { TRACKERS } from '../processes/order/pendingTrackers';
+import { BUY_FILL_WAIT } from '../util/fillWait';
 
 function assert(condition: boolean, message: string) {
     console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`);
     if (!condition) process.exitCode = 1;
 }
-// Prism's fill wait sleeps 2.5 s between its status polls: shortened so the test stays well inside the runner's timeout.
+// A buy waits BUY_FILL_WAIT (5 min) before it is cancelled and Prism's wait sleeps 2.5 s / 5 s between its status polls: both shortened so the
+// test stays well inside the runner's timeout.
+BUY_FILL_WAIT.ms = 30;
 const realSetTimeout = global.setTimeout;
-(global as any).setTimeout = (fn: any, ms?: number, ...args: any[]) => realSetTimeout(fn, ms === 2500 ? 1 : ms, ...args);
+(global as any).setTimeout = (fn: any, ms?: number, ...args: any[]) => realSetTimeout(fn, ms === 2500 || ms === 5000 ? 1 : ms, ...args);
 
 let status: { status: string; filledQuantity: number; fillPrice?: number } = { status: 'PENDING', filledQuantity: 0 };
 let cancelFails = true;

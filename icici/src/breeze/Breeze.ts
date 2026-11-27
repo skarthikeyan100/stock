@@ -1,5 +1,5 @@
 import Log from '../util/Log';
-import { cancelThenRecheck, fillStateUnknownError } from '../util/fillWait';
+import { cancelThenRecheck, fillStateUnknownError, buyPollMs, FillWaitBuy } from '../util/fillWait';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -626,7 +626,9 @@ class Breeze {
     // cancelOrderOnBreeze on any getFillPrice failure) to avoid a redundant
     // double-cancel-and-recheck round trip and the confusing log sequence
     // that produces.
-    async getFillPrice(exchangeCode: string, orderId: string, maxAttempts = 12, intervalMs = 5000, cancelOnTimeout = true): Promise<number> {
+    // `buy`: a buy's wait (fillWait.BUY_FILL_WAIT): polled until `until` (maxAttempts is ignored), the interval growing after a minute;
+    // `pause` waits between two polls and returns the price when the order-notify push reports the fill meanwhile.
+    async getFillPrice(exchangeCode: string, orderId: string, maxAttempts = 12, intervalMs = 5000, cancelOnTimeout = true, buy?: FillWaitBuy): Promise<number> {
         const readRecord = async () => {
             const result = await this.getOrderDetail(exchangeCode, orderId);
             return Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
@@ -656,21 +658,24 @@ class Breeze {
             new BreezeTerminalOrderError(`Breeze order ${orderId} only partially filled (filled=${c.filled} @ ${c.price}) before the remainder was cancelled`, { filled: c.filled, price: c.price });
 
         let lastError: unknown = null;
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const started = Date.now();
+        for (let attempt = 0; buy ? attempt === 0 || Date.now() < buy.until : attempt < maxAttempts; attempt++) {
             try {
                 const record = await readRecord();
                 const c = classify(record);
                 if (c.kind === 'full') return c.price;
                 if (c.kind === 'partial') throw partialError(c);
-                if (c.kind === 'dead') throw new BreezeTerminalOrderError(`Breeze order ${orderId} ${record.status}`);
+                if (c.kind === 'dead') throw Object.assign(new BreezeTerminalOrderError(`Breeze order ${orderId} ${record.status}`), { orderTerminal: true });
             } catch (e: any) {
                 // Terminal verdicts propagate; a transient poll error just burns one attempt - it
                 // must NOT skip the timeout cancel below and leave the order resting at the broker.
                 if (e instanceof BreezeTerminalOrderError) throw e;
                 lastError = e;
-                Log.log(`[Breeze] getFillPrice poll error for ${orderId} (attempt ${attempt + 1}/${maxAttempts}):`, e);
+                Log.log(`[Breeze] getFillPrice poll error for ${orderId} (attempt ${attempt + 1}${buy ? '' : `/${maxAttempts}`}):`, e);
             }
-            await sleep(intervalMs);
+            if (!buy) { await sleep(intervalMs); continue; }
+            const pushed = await buy.pause(Math.min(buyPollMs(Date.now() - started, intervalMs), Math.max(0, buy.until - Date.now())));
+            if (pushed !== undefined) return pushed;
         }
         // Give up waiting - but an order left resting at the broker after we
         // stop watching it is an orphan, same risk Kite.getFillPrice's own
@@ -705,7 +710,8 @@ class Breeze {
                 Log.log(`[Breeze] ALERT: order ${orderId} did not fill within the timeout and the cancel failed - it may still be resting live at the broker`);
             }
         }
-        throw Object.assign(new Error(`Breeze order ${orderId} did not fill within timeout${lastError ? ` (last error: ${(lastError as any)?.message ?? lastError})` : ''}`), { orderMayBeLive: cancelWasFailed });
+        // orderTerminal (a buy): the cancel went through and the re-check shows nothing filled - the order is over (PendingOrderTracker.awaitBuy).
+        throw Object.assign(new Error(`Breeze order ${orderId} did not fill within timeout${lastError ? ` (last error: ${(lastError as any)?.message ?? lastError})` : ''}`), { orderMayBeLive: cancelWasFailed, ...(buy && cancelOnTimeout && !cancelWasFailed ? { orderTerminal: true } : {}) });
     }
 }
 

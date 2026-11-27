@@ -25,7 +25,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
 import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
-import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution } from './unconfirmedBuy';
+import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution, holdTickBriefly, buyStillWaiting, cancelBuysInFlight } from './unconfirmedBuy';
 import { bookPlatformSoldLegs } from './platformSells';
 import { carryOver, reportCarried, CarriedBatch, CarriedInput } from './dayRollover';
 import { lostFollowUp } from './chainFollowUp';
@@ -145,17 +145,21 @@ export interface SimpleLeg {
     // The hedge buy (or the add buy `addToLegId`) of this leg was UNCONFIRMED (timeout / cancel failed / broker unreadable) and may be live. `hedged` stays
     // true meanwhile (no second buy), every buy of the strategy waits, and the record is settled against the broker (cancelled with 0 filled -> `hedged`
     // cleared, retried; filled or part filled -> the fill is adopted, never bought again). Persisted, so it survives a restart.
-    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; addToLegId?: string; heldBefore?: number; at: number; noFunds?: string };
+    // `inFlight`: recorded BEFORE the buy call (which waits up to BUY_FILL_WAIT), so a restart in the middle of the wait cannot buy it twice.
+    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; addToLegId?: string; heldBefore?: number; at: number; noFunds?: string; same?: boolean; inFlight?: boolean };
 }
 
 interface PairContract { tradingSymbol: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; premium: number }
 interface State { day: string; legs: Record<string, SimpleLeg>; pair?: { CE?: PairContract; PE?: PairContract }; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean;
     rootNoFunds?: boolean; // the root buy was refused for insufficient funds: not retried today (reset() re-arms)
+    pendingRoot?: PendingRootBuy; // the root buy in flight (it waits up to BUY_FILL_WAIT): persisted, so a restart mid-wait cannot buy a second root
     // Broker order ids of the sells this strategy's fill handler (or a reconcile that attributed a platform sell) already booked. sellIdsTracked is set only on a state
     // created by code that records them: a state without it is legacy and its reconcile falls back to quantities (see platformSells.ts).
     sellIdsTracked?: boolean; seenSells?: string[];
     sellQtys?: Record<string, number>; // quantity booked from each order's fill event (see platformSells.ts SeenSells.partQty)
     carried?: CarriedBatch[] }         // what earlier days left unresolved (see dayRollover.ts)
+
+type PendingRootBuy = { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; at: number };
 
 const opposite = (r: Right): Right => (r === 'CE' ? 'PE' : 'CE');
 
@@ -178,6 +182,10 @@ export default class ExperimentalScaledStrategy extends Strategy {
     private lastPendingSettle = new Map<string, number>();
     private placing = new Map<string, RestingSell>(); // leg id -> the resting sell whose placement is in flight (it may already rest, or have filled)
     private busy = new Set<string>();           // leg ids with a hedge / double-up / sell placement in flight
+    private hedging = new Set<string>();         // leg ids whose hedge buy is in flight (not `busy`: its sells, stop loss and close must not wait for the buy)
+    private rootInFlight = false;                // the root buy is in flight (state.pendingRoot)
+    private settlingRoot = false;
+    private lastRootSettle = 0;
     private lastSellAttempt = new Map<string, number>();
     private lastEodAttempt = 0;
     private lastStrandedCancel = 0;
@@ -308,7 +316,12 @@ export default class ExperimentalScaledStrategy extends Strategy {
     // reports each once and keeps its record in the new day's state. Nothing is settled at the broker here (that would cancel orders).
     private carriedFrom(old: State): CarriedInput[] {
         const configured = this.brokerOrKite();
-        return Object.values(old.legs).flatMap((l) => {
+        const root = old.pendingRoot;
+        const rootBuy: CarriedInput[] = root ? [{
+            kind: 'pendingBuy' as const, broker: configured, tsym: root.tsym, open: true, remaining: root.qty, accounted: 0, record: { ...root },
+            alert: `a root buy of ${root.qty} ${root.tsym} was still in flight when the day rolled over from ${old.day} - whether it filled is not known: check the broker's order book, trade book and position by hand`,
+        }] : [];
+        return rootBuy.concat(Object.values(old.legs).flatMap((l): CarriedInput[] => {
             const broker = l.broker ?? configured;
             const leg: CarriedInput = {
                 broker, tsym: l.tsym, open: l.status === 'open',
@@ -321,7 +334,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 kind: 'pendingBuy' as const, broker, tsym: p.tsym, open: true, remaining: p.qty, accounted: 0, record: { ...p, legId: l.id },
                 alert: `an unconfirmed ${p.addToLegId ? 'add' : 'hedge'} buy of ${p.qty} ${p.tsym} (recorded on leg ${l.id} ${l.tsym}) was never settled before the day rolled over from ${old.day} - whether it filled is not known: check the broker's order book, trade book and position by hand`,
             }];
-        });
+        }));
     }
 
     private checkCarried(): Promise<void> {
@@ -468,6 +481,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         // a CE and a PE both open means the pair is already hedged; doubled is set so an adopted leg is never doubled.
         const known = new Set(this.openLegs().map((l) => l.token));
         const pendingTsyms = new Set(Object.values(this.state.legs).filter((l) => l.pendingHedge).map((l) => l.pendingHedge!.tsym)); // a pending hedge buy is settled from the broker, not adopted as an unknown position
+        if (this.state.pendingRoot) pendingTsyms.add(this.state.pendingRoot.tsym); // likewise a root buy still in flight
         const orphans = openTrades.filter((t) => Number(t.quantity) > 0 && !pendingTsyms.has(t.tsym) && !known.has(String(t.token)) && !this.openLegs().some((l) => l.tsym === t.tsym));
         const rights = new Set<Right>();
         for (const l of this.openLegs()) rights.add(l.right);
@@ -563,6 +577,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         if (!this.enabled) { this.gateLog.log('disabled'); return; }
         await this.cancelStrandedSells();
         await this.settlePendingHedges(false); // an unconfirmed hedge buy is settled even at EOD / after the max-profit trip (a fill is then closed with the rest)
+        await this.settlePendingRoot(); // a root buy a restart left in flight
         if (this.isStopped()) {
             if (Date.now() - this.lastEodAttempt > EOD_RETRY_MS) {
                 this.lastEodAttempt = Date.now();
@@ -576,6 +591,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         if (this.blocked || !this.stateLoaded) { this.gateLog.log('state not loaded / open trades unreadable'); return; }
         await this.retryWaitingHedges();
         if (this.entering) return;
+        if (this.state.pendingRoot) { this.gateLog.log('a root buy recorded before a restart is not settled yet'); return; }
         const cfg = this.cfg();
         const qty = Number(cfg.initialQuantity);
         const maxInvestment = Number(cfg.maxInvestment);
@@ -586,6 +602,11 @@ export default class ExperimentalScaledStrategy extends Strategy {
         if (Object.values(this.state.legs).some((l) => l.role === 'root' && !l.restarted)) { this.gateLog.log('root already opened today'); return; }
 
         this.entering = true; // synchronous, before any await
+        // The root buy may wait minutes for its fill: this tick handler returns meanwhile (`entering` holds the slot).
+        await holdTickBriefly(this.enterRoot(quote, qty, maxInvestment), this.tag);
+    }
+
+    private async enterRoot(quote: NiftyQuote, qty: number, maxInvestment: number): Promise<void> {
         try {
             const right = await this.direction(quote);
             if (right == null) return;
@@ -636,35 +657,73 @@ export default class ExperimentalScaledStrategy extends Strategy {
             return;
         }
         if (!this.enabled || this.buysBlocked()) return; // changed while the contract was being picked
-        let trade: Trade;
+        // Recorded before the buy (it waits up to BUY_FILL_WAIT), so a restart mid-wait settles this order instead of buying a second root.
+        const pending: PendingRootBuy = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty, at: Date.now() };
+        this.state.pendingRoot = pending;
+        this.rootInFlight = true;
+        this.save();
+        let leg: SimpleLeg;
         try {
-            trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
-        } catch (e) {
-            Log.log(`${this.tag} root buy failed:`, e);
-            if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) { // definitely not placed: the next tick may try again, except for funds
-                if (isInsufficientFunds(e)) this.giveUpRoot(contract.tradingSymbol, e);
-                return;
+            let trade: Trade;
+            try {
+                trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
+            } catch (e) {
+                Log.log(`${this.tag} root buy failed:`, e);
+                if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) { // definitely not placed: the next tick may try again, except for funds
+                    if (isInsufficientFunds(e)) this.giveUpRoot(contract.tradingSymbol, e);
+                    return;
+                }
+                // Outcome unknown (IPC timeout / unconfirmed fill): settle it against the order side and the broker instead of parking the strategy.
+                const res = await this.resolveUnconfirmedBuy(contract);
+                if (res.kind === 'none') {
+                    if (isInsufficientFunds(e)) { this.giveUpRoot(contract.tradingSymbol, e); return; }
+                    Log.log(`${this.tag} root buy of ${contract.tradingSymbol} was cancelled with 0 filled - no position, a new root may be tried`);
+                    return;
+                }
+                if (res.kind === 'unknown') {
+                    this.manualReview = true;
+                    Log.log(`${this.tag} ALERT: root buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
+                    return;
+                }
+                trade = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
+                Log.log(`${this.tag} root buy of ${contract.tradingSymbol} had filled after all: adopting qty=${res.qty} @${res.price}`);
             }
-            // Outcome unknown (IPC timeout / unconfirmed fill): settle it against the order side and the broker instead of parking the strategy.
-            const res = await this.resolveUnconfirmedBuy(contract);
-            if (res.kind === 'none') {
-                if (isInsufficientFunds(e)) { this.giveUpRoot(contract.tradingSymbol, e); return; }
-                Log.log(`${this.tag} root buy of ${contract.tradingSymbol} was cancelled with 0 filled - no position, a new root may be tried`);
-                return;
-            }
-            if (res.kind === 'unknown') {
-                this.manualReview = true;
-                Log.log(`${this.tag} ALERT: root buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
-                return;
-            }
-            trade = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
-            Log.log(`${this.tag} root buy of ${contract.tradingSymbol} had filled after all: adopting qty=${res.qty} @${res.price}`);
+            this.state.pendingRoot = undefined; // saved together with the new leg (addLeg)
+            leg = this.addLeg(trade, contract, right, 'root', false);
+        } finally {
+            this.rootInFlight = false;
+            if (this.state.pendingRoot === pending) { this.state.pendingRoot = undefined; this.save(); }
         }
-        const leg = this.addLeg(trade, contract, right, 'root', false);
         this.setPair({ [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } });
         this.save();
         Log.log(`${this.tag} root ${right} ${leg.tsym} qty=${leg.qty} @${leg.entry}`);
         await this.placeSell(leg);
+    }
+
+    // A root buy recorded as in flight that no call is waiting on (a restart in the middle of its wait): left alone while it still rests inside the
+    // wait, then settled from the broker like an unconfirmed hedge buy (nothing bought: a new root may be tried; bought: adopted as the root).
+    private async settlePendingRoot(): Promise<void> {
+        const p = this.state.pendingRoot;
+        if (!p || this.rootInFlight || this.settlingRoot || Date.now() - this.lastRootSettle < PENDING_HEDGE_RETRY_MS) return;
+        this.lastRootSettle = Date.now();
+        this.settlingRoot = true;
+        try {
+            if (!this.isStopped() && await buyStillWaiting(this.userId, this.brokerOrKite(), p.tsym, p.at)) return;
+            const res = await this.resolveUnconfirmedBuy({ tradingSymbol: p.tsym, premium: p.premium });
+            if (this.state.pendingRoot !== p) return;
+            if (res.kind === 'unknown') { Log.log(`${this.tag} pending root buy ${p.tsym} still unresolved (${res.why}) - retrying`); return; }
+            this.state.pendingRoot = undefined;
+            if (res.kind === 'none') { this.save(); Log.log(`${this.tag} pending root buy ${p.tsym} was not filled - no position, a new root may be tried`); return; }
+            const leg = this.addLeg(Object.assign(new Trade(), { quantity: res.qty, price: res.price }), { tradingSymbol: p.tsym, token: p.token, exchange: p.exchange, strike: p.strike, premium: p.premium }, p.right, 'root', false);
+            this.setPair({ [p.right]: { tradingSymbol: p.tsym, token: p.token, exchange: p.exchange, strike: p.strike, premium: p.premium } });
+            this.save();
+            Log.log(`${this.tag} pending root buy of ${p.tsym} had filled: adopted qty=${leg.qty} @${leg.entry}`);
+            if (!this.isStopped()) await this.placeSell(leg); // when stopped the close-all path sells it
+        } catch (e) {
+            Log.log(`${this.tag} settling the pending root buy of ${p.tsym} failed, retrying:`, e);
+        } finally {
+            this.settlingRoot = false;
+        }
     }
 
     private addLeg(trade: Trade, contract: { tradingSymbol: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; premium: number }, right: Right, role: 'root' | 'hedge', hedged: boolean, parentId?: string): SimpleLeg {
@@ -926,7 +985,9 @@ export default class ExperimentalScaledStrategy extends Strategy {
     private capQuantity(qty: number, contract: { token: string; premium: number }): number {
         const lot = INDEX_LOT_SIZE.NIFTY;
         const price = this.pairPx.get(String(contract.token)) ?? contract.premium;
-        const room = Number(this.cfg()?.maxInvestment) - this.invested();
+        // Hedge buys still waiting for their fill count too: their cost is not in the open legs yet.
+        const buying = Object.values(this.state.legs).reduce((sum, l) => sum + (this.hedging.has(l.id) && l.pendingHedge ? l.pendingHedge.qty * l.pendingHedge.premium : 0), 0);
+        const room = Number(this.cfg()?.maxInvestment) - this.invested() - buying;
         if (!(price > 0)) return qty;
         const lots = Math.floor(room / (price * lot));
         return Math.max(0, Math.min(qty, lots * lot));
@@ -977,7 +1038,13 @@ export default class ExperimentalScaledStrategy extends Strategy {
     }
 
     // `same`: follow the leg's direction (buy the same right) instead of the opposite one - used when the leg closed at a profit.
-    private async hedge(leg: SimpleLeg, reason: string, same = false): Promise<void> {
+    // Returns when the hedge is done, or after BUY_TICK_HOLD while its buy still waits for the fill (holdTickBriefly): the leg's stop, sells and
+    // close are not held up by it (`hedging`, `pendingSides` and `hedged` keep a second buy out).
+    private hedge(leg: SimpleLeg, reason: string, same = false): Promise<void> {
+        return holdTickBriefly(this.runHedge(leg, reason, same), this.tag);
+    }
+
+    private async runHedge(leg: SimpleLeg, reason: string, same: boolean): Promise<void> {
         if (leg.hedged || this.busy.has(leg.id) || !this.enabled || this.buysBlocked() || this.isStopped()) return;
         const right = same ? leg.right : opposite(leg.right);
         const fixed = this.state.pair?.[right];
@@ -1024,7 +1091,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         if (leg.hedgeWaiting) { leg.hedgeWaiting = false; if (!this.capHeld.has(leg.id)) Log.log(`${this.tag} hedge of ${leg.tsym} released (${reason})`); }
         leg.hedged = true; // synchronous, before any await: a second tick must not buy a second hedge
         if (this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
-        this.busy.add(leg.id);
+        this.hedging.add(leg.id);
         this.save();
         try {
             const ops = brokerLegOps(() => this.cfg()?.broker);
@@ -1047,11 +1114,15 @@ export default class ExperimentalScaledStrategy extends Strategy {
             }
             this.capHeld.delete(leg.id);
             if (hedgeQty < wanted) Log.log(`${this.tag} hedge quantity of ${contract.tradingSymbol} cut ${wanted} -> ${hedgeQty} by maxInvestment`);
+            // Recorded before the buy (it waits up to BUY_FILL_WAIT), so a restart mid-wait settles this order instead of buying a second hedge.
+            leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: hedgeQty, same, at: Date.now(), inFlight: true };
+            this.save();
             let trade: Trade;
             try {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker());
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
+                    leg.pendingHedge = undefined;
                     if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
                     Log.log(`${this.tag} hedge buy failed (not placed, will retry):`, e);
@@ -1062,6 +1133,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 Log.log(`${this.tag} hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
+                    leg.pendingHedge = undefined;
                     if (isInsufficientFunds(e)) { this.giveUpHedge(leg, contract.tradingSymbol, e); return; }
                     leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
                     Log.log(`${this.tag} hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
@@ -1076,6 +1148,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                     this.save();
                     return;
                 }
+                leg.pendingHedge = undefined; // saved together with the new leg (addLeg)
                 const adopted = new Trade();
                 adopted.quantity = res.qty;
                 adopted.price = res.price;
@@ -1084,6 +1157,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 await this.placeSell(hedgeLeg);
                 return;
             }
+            leg.pendingHedge = undefined; // saved together with the new leg (addLeg)
             const hedgeLeg = this.addLeg(trade, contract, right, 'hedge', false, leg.id);
             Log.log(`${this.tag} hedged ${leg.tsym} (${reason}) with ${hedgeLeg.tsym} qty=${hedgeLeg.qty} @${hedgeLeg.entry}`);
             await this.placeSell(hedgeLeg);
@@ -1094,7 +1168,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
             Log.log(`${this.tag} hedge contract lookup failed, will retry:`, e);
         } finally {
             this.pendingSides.delete(right);
-            this.busy.delete(leg.id);
+            this.hedging.delete(leg.id);
         }
     }
 
@@ -1177,7 +1251,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
 
     // No open leg, no hedge waiting or in flight, nothing bought after this leg (no leg has it as parent) and no hedge buy being placed: nothing could ever place another order.
     private chainDead(leg: SimpleLeg): boolean {
-        if (this.openLegs().length > 0 || this.pendingSides.size > 0 || this.busy.size > 0 || this.entering) return false;
+        if (this.openLegs().length > 0 || this.pendingSides.size > 0 || this.busy.size > 0 || this.hedging.size > 0 || this.entering || !!this.state.pendingRoot) return false;
         const all = Object.values(this.state.legs);
         if (all.some((l) => l.parentId === leg.id)) return false;
         return !all.some((l) => (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge);
@@ -1207,7 +1281,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
 
     // Every buy waits while a human review is pending or a hedge / add buy is unconfirmed (it may be live: a second one would double-buy).
     private buysBlocked(): boolean {
-        return this.manualReview || Object.values(this.state.legs).some((l) => !!l.pendingHedge);
+        return this.manualReview || Object.values(this.state.legs).some((l) => !!l.pendingHedge && !this.hedging.has(l.id)); // a hedge buy still in flight blocks only its own leg / side
     }
 
     // Settles the recorded unconfirmed hedge / add buys against the broker (cancel whatever still rests, read the live quantity):
@@ -1218,11 +1292,13 @@ export default class ExperimentalScaledStrategy extends Strategy {
     private async settlePendingHedges(force: boolean, onlyTsym?: string): Promise<void> {
         for (const leg of Object.values(this.state.legs)) {
             const p = leg.pendingHedge;
-            if (!p || (onlyTsym && p.tsym !== onlyTsym) || this.busy.has(leg.id) || this.settling.has(leg.id)) continue;
+            if (!p || (onlyTsym && p.tsym !== onlyTsym) || this.busy.has(leg.id) || this.hedging.has(leg.id) || this.settling.has(leg.id)) continue;
             if (!force && Date.now() - (this.lastPendingSettle.get(leg.id) ?? 0) < PENDING_HEDGE_RETRY_MS) continue;
             this.lastPendingSettle.set(leg.id, Date.now());
             this.settling.add(leg.id);
             try {
+                // Left in flight by a restart: not cancelled while it still rests inside its wait.
+                if (p.inFlight && !this.isStopped() && await buyStillWaiting(this.userId, this.brokerOrKite(), p.tsym, p.at)) continue;
                 const parent = p.addToLegId ? this.state.legs[p.addToLegId] : undefined;
                 const held = p.addToLegId ? (p.heldBefore ?? (parent ? this.remaining(parent) : 0)) : 0;
                 const res = await this.resolveUnconfirmedBuy({ tradingSymbol: p.tsym, premium: p.premium }, held);
@@ -1232,7 +1308,8 @@ export default class ExperimentalScaledStrategy extends Strategy {
                 if (res.kind === 'none') {
                     if (p.noFunds) { this.giveUpHedge(leg, p.tsym, p.noFunds); continue; }
                     leg.hedged = false;
-                    leg.hedgeWaiting = false;
+                    leg.hedgeWaiting = !!p.inFlight; // a buy a restart left in flight: retried like a failed hedge (a closed leg only from Nifty ticks)
+                    if (p.inFlight) leg.hedgeSame = !!p.same;
                     this.save();
                     Log.log(`${this.tag} pending ${p.addToLegId ? 'add' : 'hedge'} buy ${p.tsym} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     continue;
@@ -1445,8 +1522,17 @@ export default class ExperimentalScaledStrategy extends Strategy {
         }
     }
 
+    // The contracts of the buys still waiting for their fill.
+    private buysInFlight(): string[] {
+        const root = this.rootInFlight && this.state.pendingRoot ? [this.state.pendingRoot.tsym] : [];
+        return [...root, ...Object.values(this.state.legs).filter((l) => this.hedging.has(l.id) && l.pendingHedge).map((l) => l.pendingHedge!.tsym)];
+    }
+
     private async closeAllLegs(label: 'EOD' | 'MAX PROFIT'): Promise<void> {
         const cap = this.maxProfit();
+        // Not awaited: the exits below never wait for a buy. What had filled comes back through the waiting buy call and is closed by the next pass.
+        const waiting = this.buysInFlight();
+        if (waiting.length > 0) void cancelBuysInFlight(this.userId, this.brokerOrKite(), waiting, `${this.tag} ${label}:`);
         for (const leg of this.openLegs()) {
             if (leg.status !== 'open' || this.busy.has(leg.id)) continue;
             this.busy.add(leg.id);
@@ -1494,7 +1580,7 @@ export default class ExperimentalScaledStrategy extends Strategy {
         this.state.rootNoFunds = false;
         this.save();
         this.manualReview = false;
-        this.entering = false;
+        if (!this.rootInFlight) this.entering = false; // a root buy still waiting for its fill keeps the slot
         this.busy.clear();
         if (this.enabled) void this.settlePendingHedges(true); // a reset after a human looked: resolve the recorded unconfirmed buys against the broker now (disabled: no order action)
     }

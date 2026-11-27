@@ -6,6 +6,7 @@ import Log from '../../util/Log';
 import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
 import { Trade } from '../../model/model';
+import { buyRequestTimeoutMs } from '../../util/fillWait';
 
 // The strategies process's only path to broker execution - no Prism/Kite
 // dependency lives here at all, by design (see plan). Connects to `order`'s
@@ -52,6 +53,8 @@ class OrderClient {
             scope.active = false;
         }
     }
+    // A buy request waits for its fill and gets its own, longer timeout (fillWait.buyRequestTimeoutMs: every order's BUY_FILL_WAIT plus overhead),
+    // so the caller never gives up on (and never frees its slot for) a buy that is still live.
     // Default timeout for a single request()/response round trip over the
     // IPC socket to the `order` process. Must comfortably exceed the
     // slowest legitimate round trip: an order-placing request can
@@ -228,7 +231,7 @@ class OrderClient {
     }
 
     async buyIndex(userId: string, payload: { niftyLtp: number; right: string; quantity: number; index?: 'NIFTY' | 'SENSEX'; targetPoints?: number; stopLossPoints?: number; strike?: number; expiry?: string; skipIfOpenPositionType?: 'CE' | 'PE' }): Promise<any> {
-        return this.call('buyIndex', userId, payload);
+        return this.call('buyIndex', userId, payload, buyRequestTimeoutMs(payload.quantity));
     }
 
     async squareOff(userId: string, payload: { tsym?: string; token?: string; quantity?: number; exchange?: 'NFO' | 'BFO'; broker?: string }): Promise<any> {
@@ -293,7 +296,8 @@ class OrderClient {
     }
 
     async manualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; price?: number; quantity?: number; targetPoints?: number; stopLossPoints?: number; limitPrice?: number; contractorBudget?: { amount: number; strict?: boolean } }): Promise<any> {
-        return this.call('manualBuy', userId, payload);
+        // A resting limit entry returns at once; every other buy waits for its fill.
+        return this.call('manualBuy', userId, payload, payload.limitPrice !== undefined ? undefined : buyRequestTimeoutMs(payload.quantity));
     }
 
     async setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number, broker?: string): Promise<void> {
@@ -328,7 +332,7 @@ class OrderClient {
     // multi-broker support). Omitted by every other caller, which keeps
     // today's per-userId resolution unchanged.
     async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: BrokerName; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX'; hedgeRebuy?: boolean }): Promise<ChunkedBuyIndexResult> {
-        return this.call('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
+        return this.call('chunkedBuyIndex', userId, payload, Math.max(OrderClient.CHUNKED_ORDER_TIMEOUT_MS, buyRequestTimeoutMs(payload.quantity)));
     }
 
     async chunkedSquareOff(userId: string, payload: { tradingSymbol: string; quantity: number; freezeQuantity?: number; broker?: BrokerName }): Promise<any> {
@@ -345,7 +349,7 @@ class OrderClient {
     }
 
     async antPlaceCoverOrder(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; transactionType: 'BUY' | 'SELL'; stopLossPoints: number }): Promise<any> {
-        return this.call('antPlaceCoverOrder', userId, payload);
+        return this.call('antPlaceCoverOrder', userId, payload, payload.transactionType === 'BUY' ? buyRequestTimeoutMs(payload.quantity) : undefined);
     }
 
     // ANT-specific (see orderProtocol.ts's comment) - plain MARKET buy (with
@@ -353,7 +357,7 @@ class OrderClient {
     // fill inside `order` and returns the resulting Trade (targetPrice set
     // after the real fill from underlyingOpen).
     async antBuyTargetOnly(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; underlyingOpen: number; marketProtectionPercent: number; product?: 'INTRADAY' | 'LONGTERM' }): Promise<Trade> {
-        return this.call('antBuyTargetOnly', userId, payload);
+        return this.call('antBuyTargetOnly', userId, payload, buyRequestTimeoutMs(payload.quantity));
     }
 
     async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO'; product?: 'INTRADAY' | 'LONGTERM' }): Promise<{ orderId: string }> {
@@ -383,7 +387,7 @@ class OrderClient {
     // 'sellContractBare' (which resolve broker per-user, wrong for one strategy
     // instance running several brokers' legs concurrently).
     async butterflyBuyLeg(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        return this.call('butterflyBuyLeg', userId, payload);
+        return this.call('butterflyBuyLeg', userId, payload, buyRequestTimeoutMs(payload.quantity));
     }
 
     async butterflyCloseLeg(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
@@ -395,7 +399,7 @@ class OrderClient {
     }
 
     async butterflyBuyToClose(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        return this.call('butterflyBuyToClose', userId, payload);
+        return this.call('butterflyBuyToClose', userId, payload, buyRequestTimeoutMs(payload.quantity)); // an ANT buy-to-close waits as long as an entry buy
     }
 
     async resolveOptionContract(userId: string, payload: { broker: BrokerName; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; skipNearestExpiryDay?: boolean; expiryOffset?: number }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
@@ -514,7 +518,7 @@ class OrderClient {
     // real users, so this class stays entirely broker-agnostic.
     // opts.hedgeRebuy: see placeLimitBuyBare (BulkPcr's hedge top-up buys lots of a slot the cap already counted).
     async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, broker?: BrokerName, opts?: { hedgeRebuy?: boolean }): Promise<any> {
-        return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price, broker, ...(opts?.hedgeRebuy ? { hedgeRebuy: true } : {}) });
+        return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price, broker, ...(opts?.hedgeRebuy ? { hedgeRebuy: true } : {}) }, buyRequestTimeoutMs(quantity));
     }
 
 

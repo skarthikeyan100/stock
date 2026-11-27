@@ -15,7 +15,8 @@ import bookkeeping from './bookkeeping';
 import { pickContractByPremium } from './priceRangeContract';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder, beginCancelOfPendingLimitOrders, endCancelOfPendingLimitOrders, silenceListenersOfPendingLimitOrders } from './pendingLimitOrders';
+import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder, beginCancelOfPendingLimitOrders, endCancelOfPendingLimitOrders, silenceListenersOfPendingLimitOrders, awaitKiteBuy } from './pendingLimitOrders';
+import { BUY_FILL_WAIT } from '../../util/fillWait';
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { exchangeForTsym } from '../../util/underlyings';
 import { loadOrderOwners, recordOrderOwner } from './orderOwners';
@@ -65,9 +66,10 @@ function kiteFillTrade(spec: KiteFillSpec, qty: number, price: number): Trade {
 
 // Waits for a fill; if the order ends partially filled (Kite.getFillPrice throws driftCancelled with
 // filledQuantity), books that real quantity before rethrowing - otherwise it'd be an untracked position/sale.
-async function getFillBookingPartial(kite: Kite, orderId: string, mk: (qty: number, price: number) => Trade, record: (t: Trade) => Promise<unknown>): Promise<number> {
+// `waitMs`: a buy's longer wait (BUY_FILL_WAIT); omitted (sells, exits) = Kite.getFillPrice's own default.
+async function getFillBookingPartial(kite: Kite, orderId: string, mk: (qty: number, price: number) => Trade, record: (t: Trade) => Promise<unknown>, waitMs?: number): Promise<number> {
     try {
-        return await kite.getFillPrice(orderId);
+        return await (waitMs ? kite.getFillPrice(orderId, undefined, undefined, undefined, waitMs) : kite.getFillPrice(orderId));
     } catch (e: any) {
         if (e?.driftCancelled && e.filledQuantity > 0) {
             await record(mk(e.filledQuantity, e.averagePrice));
@@ -244,24 +246,26 @@ export async function buyIndexOnKite(req: BuyIndexRequest): Promise<Trade> {
     const buyPrice = await orderPriceOf({ side: 'BUY', tsym: contract.tradingSymbol, token: String(commonToken), exchange: contract.exchange, broker: 'kite' });
     const { orderId } = await kite.placeLimitBuyOption(contract.tradingSymbol, req.quantity, buyPrice, contract.exchange);
     const mkPartial = (qty: number, price: number): Trade => kiteFillTrade({ tsym: contract.tradingSymbol, token: commonToken, action: 'Buy', userId: req.userId, orderId: orderId, right: req.right }, qty, price);
-    const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) => finalizeEntry(t, req.userId, contract.exchange, targetPoints, stopLossPoints));
-    Log.log(`[order] Filled ${contract.tradingSymbol} at ${entryPrice} for ${req.userId}`);
+    return awaitKiteBuy({ orderId, userId: req.userId, tradingSymbol: contract.tradingSymbol, instrumentToken: String(commonToken), quantity: req.quantity, exchange: contract.exchange }, async () => {
+        const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) => finalizeEntry(t, req.userId, contract.exchange, targetPoints, stopLossPoints), BUY_FILL_WAIT.ms);
+        Log.log(`[order] Filled ${contract.tradingSymbol} at ${entryPrice} for ${req.userId}`);
 
-    const trade = new Trade();
-    trade.tsym = contract.tradingSymbol;
-    trade.token = commonToken;
-    trade.quantity = req.quantity;
-    trade.price = entryPrice;
-    trade.lastTradePrice = entryPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.right = req.right;
-    trade.user = req.userId;
-    trade.broker = 'kite';
-    trade.brokerOrderId = orderId;
+        const trade = new Trade();
+        trade.tsym = contract.tradingSymbol;
+        trade.token = commonToken;
+        trade.quantity = req.quantity;
+        trade.price = entryPrice;
+        trade.lastTradePrice = entryPrice;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.right = req.right;
+        trade.user = req.userId;
+        trade.broker = 'kite';
+        trade.brokerOrderId = orderId;
 
-    await finalizeEntry(trade, req.userId, contract.exchange, targetPoints, stopLossPoints);
-    return trade;
+        await finalizeEntry(trade, req.userId, contract.exchange, targetPoints, stopLossPoints);
+        return trade;
+    });
 }
 
 // /prism/order/buy's three branches, Kite-routed. `contract` (now a
@@ -380,36 +384,38 @@ async function buyOneContractOnKite(userId: string, tradingSymbol: string, commo
     const buyPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: String(commonToken), exchange, broker: 'kite' });
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     const mkPartial = (qty: number, px: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: commonToken, action: 'Buy', userId: userId, orderId: orderId }, qty, px);
-    // Always wait for the real fill: a caller-supplied price used to skip this and book the order as filled at that price, so an
-    // unfilled order left a phantom position with a GTT and an exit sell.
-    const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) =>
-        finalizeEntry(
-            t,
-            userId,
-            exchange,
-            targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPoints,
-            stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPoints,
-            inAppExit
-        )
-    );
+    return awaitKiteBuy({ orderId, userId, tradingSymbol, instrumentToken: String(commonToken), quantity, exchange }, async () => {
+        // Always wait for the real fill: a caller-supplied price used to skip this and book the order as filled at that price, so an
+        // unfilled order left a phantom position with a GTT and an exit sell.
+        const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) =>
+            finalizeEntry(
+                t,
+                userId,
+                exchange,
+                targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPoints,
+                stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPoints,
+                inAppExit
+            ), BUY_FILL_WAIT.ms
+        );
 
-    const trade = new Trade();
-    trade.tsym = tradingSymbol;
-    trade.token = commonToken;
-    trade.quantity = quantity;
-    trade.price = entryPrice;
-    trade.lastTradePrice = entryPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.user = userId;
-    trade.broker = 'kite';
-    trade.brokerOrderId = orderId;
+        const trade = new Trade();
+        trade.tsym = tradingSymbol;
+        trade.token = commonToken;
+        trade.quantity = quantity;
+        trade.price = entryPrice;
+        trade.lastTradePrice = entryPrice;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.user = userId;
+        trade.broker = 'kite';
+        trade.brokerOrderId = orderId;
 
-    const settings = configService.getConfig().settings;
-    const finalTargetPoints = targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? settings.targetPoints;
-    const finalStopLossPoints = stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? settings.stopLossPoints;
-    await finalizeEntry(trade, userId, exchange, finalTargetPoints, finalStopLossPoints, inAppExit);
-    return trade;
+        const settings = configService.getConfig().settings;
+        const finalTargetPoints = targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? settings.targetPoints;
+        const finalStopLossPoints = stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? settings.stopLossPoints;
+        await finalizeEntry(trade, userId, exchange, finalTargetPoints, finalStopLossPoints, inAppExit);
+        return trade;
+    });
 }
 
 // POST /prism/settarget's Kite path: update bookkeeping's local target/SL
@@ -612,45 +618,48 @@ export async function buyResolvedOnKite(request: BuyRequest): Promise<Trade> {
     };
 
     const { orderId } = await kite.placeLimitBuyOption(request.tradingSymbol, request.quantity, buyPrice, exchange);
-    let entryPrice: number;
-    try {
-        entryPrice = await kite.getFillPrice(
-            orderId,
-            undefined,
-            undefined,
-            request.driftCancelPoints !== undefined
-                ? {
-                      limitPrice: buyPrice,
-                      driftPoints: request.driftCancelPoints,
-                      // skipCache: true - drift check needs a fresh LTP every
-                      // poll, not ANT.getQuote's own cached snapshot (see its
-                      // comment); otherwise this could compare the resting
-                      // limit price against the exact same quote that set it.
-                      getLtp: () => ANT.getInstance().getQuote(exchange, request.brokerToken, { skipCache: true }),
-                  }
-                : undefined
-        );
-    } catch (e: any) {
-        // A drift-cancel can carry a genuine partial fill (Kite cancelled only
-        // the remaining unfilled qty - see Kite.getFillPrice's driftCheck
-        // block). That quantity is real money at the broker and must be
-        // recorded the same way every other successful chunk is (finalizeEntry
-        // -> bookkeeping.recordFill), or it becomes an untracked position with
-        // no exit sizing for it (the exact gap flagged in code review). Still
-        // rethrow afterward so buyChunked knows to stop placing further chunks
-        // - the error already carries filledQuantity/averagePrice for
-        // buyChunked to fold into its own running total.
-        if (e?.driftCancelled && e.filledQuantity > 0) {
-            const partialTrade = buildTrade(e.filledQuantity, e.averagePrice, orderId);
-            await finalizeEntry(partialTrade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
+    return awaitKiteBuy({ orderId, userId: request.userId, tradingSymbol: request.tradingSymbol, instrumentToken: String(request.brokerToken), quantity: request.quantity, exchange }, async () => {
+        let entryPrice: number;
+        try {
+            entryPrice = await kite.getFillPrice(
+                orderId,
+                undefined,
+                undefined,
+                request.driftCancelPoints !== undefined
+                    ? {
+                          limitPrice: buyPrice,
+                          driftPoints: request.driftCancelPoints,
+                          // skipCache: true - drift check needs a fresh LTP every
+                          // poll, not ANT.getQuote's own cached snapshot (see its
+                          // comment); otherwise this could compare the resting
+                          // limit price against the exact same quote that set it.
+                          getLtp: () => ANT.getInstance().getQuote(exchange, request.brokerToken, { skipCache: true }),
+                      }
+                    : undefined,
+                BUY_FILL_WAIT.ms
+            );
+        } catch (e: any) {
+            // A drift-cancel can carry a genuine partial fill (Kite cancelled only
+            // the remaining unfilled qty - see Kite.getFillPrice's driftCheck
+            // block). That quantity is real money at the broker and must be
+            // recorded the same way every other successful chunk is (finalizeEntry
+            // -> bookkeeping.recordFill), or it becomes an untracked position with
+            // no exit sizing for it (the exact gap flagged in code review). Still
+            // rethrow afterward so buyChunked knows to stop placing further chunks
+            // - the error already carries filledQuantity/averagePrice for
+            // buyChunked to fold into its own running total.
+            if (e?.driftCancelled && e.filledQuantity > 0) {
+                const partialTrade = buildTrade(e.filledQuantity, e.averagePrice, orderId);
+                await finalizeEntry(partialTrade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
+            }
+            throw e;
         }
-        throw e;
-    }
 
-    const trade = buildTrade(request.quantity, entryPrice, orderId);
+        const trade = buildTrade(request.quantity, entryPrice, orderId);
 
-    await finalizeEntry(trade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
-    return trade;
+        await finalizeEntry(trade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
+        return trade;
+    });
 }
 
 // --- ContinuousStrategy bare execution primitives ---
@@ -674,18 +683,17 @@ export async function marketBuyBareOnKite(userId: string, tradingSymbol: string,
     // getMarketableKitePrice needs to query ANT for a live quote.
     const buyPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: String(instrumentToken), exchange, broker: 'kite' });
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
-    // Tracked (persisted, owner-ledgered) from placement until its fill is booked: this call waits for the fill in-process, so an
-    // order-process restart in that window used to lose the fill - a real broker position with no Buy doc, which reconcile can only
+    // awaitKiteBuy: tracked (persisted, owner-ledgered) from placement until its fill is booked: this call waits for the fill in-process, so
+    // an order-process restart in that window used to lose the fill - a real broker position with no Buy doc, which reconcile can only
     // leave untracked (2026-10-28 10:06, NIFTY26N0322550PE). The pending poller books it after a restart; recordFill dedupes on
-    // brokerOrderId, so it is booked once whichever side gets there first. Left tracked if the wait throws: the poller resolves it.
-    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange, action: 'Buy' });
+    // brokerOrderId, so it is booked once. Left tracked if the wait throws: the poller resolves it.
     const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'Buy', userId: userId, orderId: orderId }, qty, price);
-    const entryPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordFill(t));
-    const trade = mk(quantity, entryPrice);
-
-    await bookkeeping.recordFill(trade);
-    untrackPendingLimitOrder(orderId);
-    return trade;
+    return awaitKiteBuy({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange }, async () => {
+        const entryPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordFill(t), BUY_FILL_WAIT.ms);
+        const trade = mk(quantity, entryPrice);
+        await bookkeeping.recordFill(trade);
+        return trade;
+    });
 }
 
 // Unlike squareOffOnKite, this sets trade.token - needed so tokenRouter's

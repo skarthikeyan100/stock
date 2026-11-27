@@ -6,6 +6,7 @@ import configService from '../prism/ConfigService';
 import { CALL, PUT, MOCK_BROKER } from '../constants';
 import { LegManager, LegManagerConfig } from './LegManager';
 import { brokerLegOps } from './LegBrokerOps';
+import { holdTickBriefly } from './unconfirmedBuy';
 import { initSRState, processTick, SRConfig, SRState } from '../lib/supportResistance';
 import { fetchOpenTradesWithRetry } from './openTrades';
 
@@ -161,7 +162,8 @@ export default class SupportResistanceStrategy extends Strategy {
         }
 
         const right = event.direction === 'resistance' ? CALL : PUT;
-        await this.tryOpen(right, quote.ltp);
+        // The buy may wait minutes for its fill: the tick handler returns meanwhile (`opening` holds the side), so the EOD close is not held up.
+        await holdTickBriefly(this.tryOpen(right, quote.ltp), '[SupportResistance]');
     }
 
     private async tryOpen(right: string, niftyLtp: number): Promise<void> {
@@ -186,7 +188,7 @@ export default class SupportResistanceStrategy extends Strategy {
         super.reset();
         this.legManager.reset();
         this.srState = initSRState();
-        this.opening.clear();
+        // `opening` is not cleared: a buy still waiting for its fill keeps its side (tryOpen frees it).
         this.restoreFailed = false;
         this.ordered = false;
     }

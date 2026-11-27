@@ -1,8 +1,8 @@
 /**
- * Fill-wait budget below the IPC timeout, Breeze quote cross-check, and the strategies' shared unconfirmed-buy resolver.
+ * Fill-wait budget (sells) below the IPC timeout, a buy's 5-minute wait and its request timeout, Breeze quote cross-check, and the strategies' shared unconfirmed-buy resolver.
  * Run: npx tsc, then: MOCK_BROKER=true node ./dist/test/orderTimeoutBudget.test.js (from repo root)
  */
-import { fillWaitPlan } from '../util/fillWait';
+import { fillWaitPlan, buyRequestTimeoutMs, BUY_FILL_WAIT } from '../util/fillWait';
 import { crossCheckQuote } from '../util/quoteCrossCheck';
 import { resolveUnconfirmedBuy } from '../strategy/unconfirmedBuy';
 import OrderClient from '../processes/strategies/OrderClient';
@@ -17,6 +17,10 @@ async function main() {
     }
     const d = fillWaitPlan({ ipcTimeoutMs: 90000 });
     assert(d.totalMs + 30000 <= 90000, 'default: 30 s remain for placement + cancel + re-check (old 30s+12x5s = 90s did not)');
+
+    // 1b. a buy waits 5 min before it is cancelled, and its caller outlasts that wait for every order of a split buy
+    assert(BUY_FILL_WAIT.ms === 5 * 60_000, 'a buy waits 5 minutes for its fill');
+    assert(buyRequestTimeoutMs(65) >= BUY_FILL_WAIT.ms + 120_000 && buyRequestTimeoutMs(1300) >= 2 * BUY_FILL_WAIT.ms && buyRequestTimeoutMs() >= 8 * BUY_FILL_WAIT.ms, 'the request timeout of a buy covers every order\'s wait');
 
     // 2. stale Breeze quote (2026-11-13): ask 155.85 while ANT sees ltp 165.2 / ask 165.5
     const stale = crossCheckQuote({ bestBid: 155.5, bestAsk: 155.85, ltp: 155.8 }, { ltp: 165.2, bid: 165.0, ask: 165.5 });

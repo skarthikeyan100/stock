@@ -1,4 +1,49 @@
 import Log from './Log';
+import { sleep } from './sleep';
+
+// How long an unfilled or partly filled platform BUY waits for its fill before it is cancelled (user's rule 2026-11-27). Counted from the
+// moment the wait starts, right after placement. Sells and square-off exits keep their own, shorter waits. An object so a unit test can shorten it.
+export const BUY_FILL_WAIT = { ms: 5 * 60_000 };
+// What one buy order may take on top of its fill wait: pricing, placement, the cancel, the status re-check and ANT's trade-book settlement.
+export const BUY_ORDER_OVERHEAD_MS = 2 * 60_000;
+
+// The status poll interval of a buy's fill wait: quick for the first minute (a prompt fill whose push is missed or absent is booked at once),
+// slower afterwards (Breeze allows 100 calls a minute for the whole account; several buys can wait at the same time).
+export function buyPollMs(elapsedMs: number, fastMs = 5000, slowMs = 10_000): number {
+    return elapsedMs < 60_000 ? fastMs : slowMs;
+}
+
+// A buy's wait handed to a broker's status poll: poll until `until` (epoch ms); between two polls `pause(ms)` waits that long, returning the
+// fill price at once when the broker's order-notify push reports it meanwhile.
+export interface FillWaitBuy {
+    until: number;
+    pause: (ms: number) => Promise<number | undefined>;
+}
+
+// The `pause` of a broker with a push stream: listen for the push for `ms`; a push that rejects (cancelled, rejected, unusable) leaves the
+// verdict to the next status poll, after the rest of the interval.
+export function pushOrPause(waitForFill: (ms: number) => Promise<number>, onPushed?: () => void): FillWaitBuy['pause'] {
+    return async (ms: number) => {
+        const started = Date.now();
+        try {
+            const price = await waitForFill(ms);
+            onPushed?.();
+            return price;
+        } catch {
+            const left = ms - (Date.now() - started);
+            if (left > 0) await sleep(left);
+            return undefined;
+        }
+    };
+}
+
+// How long a caller waits for the reply to a buy request (OrderClient). It must outlast the order side's whole wait, or the caller reports a
+// failure and frees its slot while the order is still live. A buy above one freeze order is placed one order after another, each with its own
+// wait: 1000 is the smaller of the two index freeze quantities (SENSEX), and an unknown quantity (sized by the order side) counts as 8 orders.
+export function buyRequestTimeoutMs(quantity?: number): number {
+    const orders = Number(quantity) > 0 ? Math.ceil(Number(quantity) / 1000) : 8;
+    return orders * (BUY_FILL_WAIT.ms + BUY_ORDER_OVERHEAD_MS);
+}
 
 // What a fill wait learned about an order it has stopped waiting for, after a cancel attempt and a status re-check.
 export type FillResult =
@@ -45,11 +90,12 @@ export function fillStateUnknownError(message: string, orderMayBeLive: boolean):
     });
 }
 
-// The order process answers a strategy's buy request over IPC, and the strategy gives up on it after ORDER_IPC_TIMEOUT_MS (default 90 s, see
-// OrderClient.REQUEST_TIMEOUT_MS). A fill wait that outlasts that leaves the strategy with "timed out, outcome unknown" while the order process
-// goes on to cancel the order a few seconds later (live 2026-11-13: Breeze limit buy = 30 s push wait + 12 x 5 s REST poll + cancel + re-check =
-// ~93 s > 90 s, so a cleanly cancelled buy parked the strategy for manual review). The whole wait (push + REST fallback) is therefore planned
-// from the IPC timeout: it takes at most FILL_WAIT_BUDGET_SHARE of it, which leaves the rest for placement, the cancel and the re-check.
+// The fill wait of a SELL (and of the first push-only stretch of a buy's wait, see BUY_FILL_WAIT). The order process answers a request over
+// IPC, and the caller gives up on a non-buy request after ORDER_IPC_TIMEOUT_MS (default 90 s, see OrderClient.REQUEST_TIMEOUT_MS). A fill wait
+// that outlasts that leaves the caller with "timed out, outcome unknown" while the order process goes on to cancel the order a few seconds later
+// (live 2026-11-13: Breeze limit buy = 30 s push wait + 12 x 5 s REST poll + cancel + re-check = ~93 s > 90 s). The whole wait (push + REST
+// fallback) is therefore planned from the IPC timeout: it takes at most FILL_WAIT_BUDGET_SHARE of it, which leaves the rest for placement, the
+// cancel and the re-check.
 export const FILL_WAIT_BUDGET_SHARE = 0.6;
 
 export function fillWaitPlan(opts: { pushShare?: number; restIntervalMs?: number; ipcTimeoutMs?: number } = {}): { pushMs: number; restAttempts: number; restIntervalMs: number; totalMs: number } {

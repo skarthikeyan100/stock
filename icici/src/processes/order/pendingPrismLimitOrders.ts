@@ -82,3 +82,6 @@ export const endCancelOfPendingPrismLimitOrders = tracker.endCancel;
 export const silenceListenersOfPendingPrismLimitOrders = tracker.silenceListeners;
 export const loadPendingPrismLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingPrismLimitOrders = tracker.poll;
+// A buy an executor waits for (see PendingOrderTracker.awaitBuy).
+export const awaitPrismBuy = tracker.awaitBuy;
+export const isHeldPrismOrder = tracker.isHeld;

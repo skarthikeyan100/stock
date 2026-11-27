@@ -17,10 +17,10 @@ import { manualBuyChunked } from './chunkedOrder';
 import { exchangeForTsym } from '../../util/underlyings';
 import { BuyRequest, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders, breezeRestingSells } from './breezePendingLimitOrders';
+import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders, breezeRestingSells, awaitBreezeBuy } from './breezePendingLimitOrders';
 import { roundToTick } from '../../util/tick';
 import { orderPriceOf } from './orderPrice';
-import { fillWaitPlan } from '../../util/fillWait';
+import { fillWaitPlan, pushOrPause, BUY_FILL_WAIT } from '../../util/fillWait';
 import { crossCheckQuote } from '../../util/quoteCrossCheck';
 import { calendarDayUtc } from '../../util/expirySkip';
 
@@ -60,26 +60,34 @@ import { calendarDayUtc } from '../../util/expirySkip';
 // false when the caller (squareOffOnBreeze) already cancels the order itself
 // right after this throws, to avoid a redundant double-cancel each retry.
 // Defaults come from fillWaitPlan (push + REST fallback bounded below the IPC timeout; the old 30 s + 12 x 5 s overran 90 s).
+// `buy` (an entry buy): the order is waited for fillWait.BUY_FILL_WAIT before it is cancelled - the push alone first, then REST polls with
+// the push still listened to. Sells and exits keep the short plan.
 const BREEZE_FILL_PLAN = fillWaitPlan();
-async function waitForBreezeFill(orderId: string, exchange: BreezeExchange, notifyTimeoutMs = BREEZE_FILL_PLAN.pushMs, restMaxAttempts = BREEZE_FILL_PLAN.restAttempts, restIntervalMs = BREEZE_FILL_PLAN.restIntervalMs, cancelOnTimeout = true): Promise<number> {
+async function waitForBreezeFill(orderId: string, exchange: BreezeExchange, notifyTimeoutMs = BREEZE_FILL_PLAN.pushMs, restMaxAttempts = BREEZE_FILL_PLAN.restAttempts, restIntervalMs = BREEZE_FILL_PLAN.restIntervalMs, cancelOnTimeout = true, buy = false): Promise<number> {
+    const started = Date.now();
+    const notify = (ms: number) => BreezeOrderNotifyStream.getInstance().waitForFill(orderId, ms);
     try {
-        const price = await BreezeOrderNotifyStream.getInstance().waitForFill(orderId, notifyTimeoutMs);
+        const price = await notify(buy ? Math.min(notifyTimeoutMs, BUY_FILL_WAIT.ms) : notifyTimeoutMs);
         Log.log(`[order] Breeze order ${orderId} filled at ${price} via order-notify push`);
         return price;
     } catch (waitErr) {
         Log.log(`[order] waitForFill failed for Breeze order ${orderId} - falling back to REST fill check:`, waitErr);
-        const price = await Breeze.getInstance().getFillPrice(exchange, orderId, restMaxAttempts, restIntervalMs, cancelOnTimeout);
-        Log.log(`[order] REST fallback confirmed fill for Breeze order ${orderId} at ${price} (order-notify push was missed)`);
+        let pushed = false;
+        const price = await (buy
+            ? Breeze.getInstance().getFillPrice(exchange, orderId, restMaxAttempts, restIntervalMs, cancelOnTimeout, { until: started + BUY_FILL_WAIT.ms, pause: pushOrPause(notify, () => { pushed = true; }) })
+            : Breeze.getInstance().getFillPrice(exchange, orderId, restMaxAttempts, restIntervalMs, cancelOnTimeout));
+        Log.log(pushed ? `[order] Breeze order ${orderId} filled at ${price} via order-notify push`
+            : `[order] REST fallback confirmed fill for Breeze order ${orderId} at ${price} (not confirmed during the order-notify wait; confirmed by REST order detail)`);
         return price;
     }
 }
 
 // waitForBreezeFill, but if the order ends partially filled (REST fallback throws driftCancelled with
 // filledQuantity) the real partial is booked via `record` before the error is rethrown - otherwise it'd be an
-// untracked position/sale at the broker.
-async function waitForBreezeFillBooking(orderId: string, exchange: BreezeExchange, tpl: Partial<Trade>, record: (t: Trade) => Promise<unknown>): Promise<number> {
+// untracked position/sale at the broker. `buy`: an entry buy's longer wait.
+async function waitForBreezeFillBooking(orderId: string, exchange: BreezeExchange, tpl: Partial<Trade>, record: (t: Trade) => Promise<unknown>, buy = false): Promise<number> {
     try {
-        return await waitForBreezeFill(orderId, exchange);
+        return await waitForBreezeFill(orderId, exchange, undefined, undefined, undefined, undefined, buy);
     } catch (e: any) {
         if (e?.driftCancelled && e.filledQuantity > 0) {
             const t = Object.assign(new Trade(), tpl, {
@@ -348,33 +356,35 @@ export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Tr
 
     Log.log(`[order] Buying ${tsym} qty=${quantity} @ ${buyPrice} (limit at the best bid) for ${req.userId} via Breeze`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, buyPrice);
-    const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym, token: contract.token, action: 'Buy', right: req.right, user: req.userId, targetPoints: req.targetPoints }, (t) => bookkeeping.recordFill(t));
-    Log.log(`[order] Filled ${tsym} at ${entryPrice} for ${req.userId} via Breeze`);
+    return awaitBreezeBuy({ orderId, userId: req.userId, tradingSymbol: tsym, antToken: contract.token, quantity, exchange: contract.exchange }, async () => {
+        const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym, token: contract.token, action: 'Buy', right: req.right, user: req.userId, targetPoints: req.targetPoints }, (t) => bookkeeping.recordFill(t), true);
+        Log.log(`[order] Filled ${tsym} at ${entryPrice} for ${req.userId} via Breeze`);
 
-    const trade = new Trade();
-    trade.tsym = tsym;
-    trade.token = contract.token;
-    trade.quantity = quantity;
-    trade.price = entryPrice;
-    trade.lastTradePrice = entryPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.right = req.right;
-    trade.user = req.userId;
-    trade.broker = 'breeze';
-    trade.brokerOrderId = orderId;
-    trade.targetPoints = req.targetPoints;
+        const trade = new Trade();
+        trade.tsym = tsym;
+        trade.token = contract.token;
+        trade.quantity = quantity;
+        trade.price = entryPrice;
+        trade.lastTradePrice = entryPrice;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.right = req.right;
+        trade.user = req.userId;
+        trade.broker = 'breeze';
+        trade.brokerOrderId = orderId;
+        trade.targetPoints = req.targetPoints;
 
-    // Breeze has no broker-side bracket (see file header), so a requested target AND stop are enforced by the in-app exitMonitor off
-    // live ticks (breeze feed, Breeze's own contract token). Without them the position is deliberately unprotected, as before.
-    const hasExit = (req.targetPoints ?? 0) > 0 && (req.stopLossPoints ?? 0) > 0;
-    if (hasExit) {
-        trade.targetPrice = roundToTick(entryPrice + (req.targetPoints as number));
-        trade.stopLossPrice = roundToTick(entryPrice - (req.stopLossPoints as number));
-    }
-    await bookkeeping.recordFill(trade);
-    if (hasExit && trade.token) exitMonitor.registerTrade(trade, exchangeForTsym(tsym), 'breeze');
-    return trade;
+        // Breeze has no broker-side bracket (see file header), so a requested target AND stop are enforced by the in-app exitMonitor off
+        // live ticks (breeze feed, Breeze's own contract token). Without them the position is deliberately unprotected, as before.
+        const hasExit = (req.targetPoints ?? 0) > 0 && (req.stopLossPoints ?? 0) > 0;
+        if (hasExit) {
+            trade.targetPrice = roundToTick(entryPrice + (req.targetPoints as number));
+            trade.stopLossPrice = roundToTick(entryPrice - (req.stopLossPoints as number));
+        }
+        await bookkeeping.recordFill(trade);
+        if (hasExit && trade.token) exitMonitor.registerTrade(trade, exchangeForTsym(tsym), 'breeze');
+        return trade;
+    });
 }
 
 // Restart-safety fallback: bookkeeping.trades is in-memory only and has no
@@ -759,23 +769,25 @@ export async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
 
     Log.log(`[order] Buying ${tsym} qty=${request.quantity} @ ${buyPrice} (limit at the best bid) for ${request.userId} via Breeze`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', request.quantity, buyPrice);
-    const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym, token: contract.token, action: 'Buy', right: contract.optionType === 'CE' ? CALL : 'put', user: request.userId }, (t) => bookkeeping.recordFill(t));
+    return awaitBreezeBuy({ orderId, userId: request.userId, tradingSymbol: tsym, antToken: contract.token, quantity: request.quantity, exchange: contract.exchange }, async () => {
+        const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym, token: contract.token, action: 'Buy', right: contract.optionType === 'CE' ? CALL : 'put', user: request.userId }, (t) => bookkeeping.recordFill(t), true);
 
-    const trade = new Trade();
-    trade.tsym = tsym;
-    trade.token = contract.token;
-    trade.quantity = request.quantity;
-    trade.price = entryPrice;
-    trade.lastTradePrice = entryPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.right = contract.optionType === 'CE' ? CALL : 'put';
-    trade.user = request.userId;
-    trade.broker = 'breeze';
-    trade.brokerOrderId = orderId;
+        const trade = new Trade();
+        trade.tsym = tsym;
+        trade.token = contract.token;
+        trade.quantity = request.quantity;
+        trade.price = entryPrice;
+        trade.lastTradePrice = entryPrice;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.right = contract.optionType === 'CE' ? CALL : 'put';
+        trade.user = request.userId;
+        trade.broker = 'breeze';
+        trade.brokerOrderId = orderId;
 
-    await bookkeeping.recordFill(trade);
-    return trade;
+        await bookkeeping.recordFill(trade);
+        return trade;
+    });
 }
 
 // --- Bare execution primitives (LegManager: ContinuousStrategy/SupportResistanceStrategy) ---
@@ -826,23 +838,23 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
     Log.log(`[order] Bare Breeze limit buy (at the best bid) ${tradingSymbol} qty=${quantity} @ ${buyPrice} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, buyPrice);
     // Tracked from placement until the fill is booked - same restart-window reasoning as marketBuyBareOnKite.
-    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Buy' });
-    const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym: tradingSymbol, token: antToken, action: 'Buy', user: userId }, (t) => bookkeeping.recordFill(t));
+    return awaitBreezeBuy({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange }, async () => {
+        const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym: tradingSymbol, token: antToken, action: 'Buy', user: userId }, (t) => bookkeeping.recordFill(t), true);
 
-    const trade = new Trade();
-    trade.tsym = tradingSymbol;
-    trade.token = antToken;
-    trade.quantity = quantity;
-    trade.price = entryPrice;
-    trade.lastTradePrice = entryPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.user = userId;
-    trade.broker = 'breeze';
-    trade.brokerOrderId = orderId;
-    await bookkeeping.recordFill(trade);
-    untrackPendingBreezeLimitOrder(orderId);
-    return trade;
+        const trade = new Trade();
+        trade.tsym = tradingSymbol;
+        trade.token = antToken;
+        trade.quantity = quantity;
+        trade.price = entryPrice;
+        trade.lastTradePrice = entryPrice;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.user = userId;
+        trade.broker = 'breeze';
+        trade.brokerOrderId = orderId;
+        await bookkeeping.recordFill(trade);
+        return trade;
+    });
 }
 
 export async function marketSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
@@ -1103,9 +1115,6 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
         const ask = await orderPriceOf({ side: 'BUY', tsym, token: contract.token, exchange: contract.exchange as 'NFO' | 'BFO', broker: 'breeze' });
         Log.log(`[order] Buying (manual) ${tsym} qty=${qty} @ ${ask} (limit at the best bid) for ${userId} via Breeze`);
         const { orderId } = await placeLimitOptionOrder(contract, 'buy', qty, ask);
-        // Tracked from placement until the fill is settled (same as marketBuyBareOnBreeze): a fill that lands after the wait gave up is booked by the poller.
-        trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol: tsym, antToken: contract.token, quantity: qty, exchange: contract.exchange, action: 'Buy' });
-
         const right = contract.optionType === 'CE' ? CALL : PUT;
         const build = (qty: number, price: number): Trade => {
             const t = new Trade();
@@ -1130,29 +1139,37 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
             if ((t.targetPrice != null || t.stopLossPrice != null) && t.token) exitMonitor.registerTrade(t, contract.exchange, 'breeze');
         };
 
+        // Tracked from placement until the fill is settled (awaitBreezeBuy): a fill that lands after the wait gave up is booked by the poller.
         let partial: Trade | undefined;
-        let entryPrice: number;
+        let livePartial: Trade | undefined; // a booked partial whose remainder may still rest: returned, and the order stays on the pending list
         try {
-            entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, {}, async (t) => {
-                // The partial's own price/qty come from the broker; rebuild with the exit levels so it is protected like a full fill.
-                partial = build(t.quantity, t.price);
-                await book(partial);
+            return await awaitBreezeBuy({ orderId, userId, tradingSymbol: tsym, antToken: contract.token, quantity: qty, exchange: contract.exchange }, async () => {
+                let entryPrice: number;
+                try {
+                    entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, {}, async (t) => {
+                        // The partial's own price/qty come from the broker; rebuild with the exit levels so it is protected like a full fill.
+                        partial = build(t.quantity, t.price);
+                        await book(partial);
+                    }, true);
+                } catch (e: any) {
+                    const live = !!(e?.orderMayBeLive || e?.fillStateUnknown);
+                    if (live) Log.log(`[order] ALERT: manual Breeze buy ${orderId} (${tsym}, ${userId}) not confirmed ${e?.fillStateUnknown ? 'fill state unknown' : 'cancel failed'} - order may still be live, left on the pending poller, check the broker`);
+                    if (partial) {
+                        Log.log(`[order] manual Breeze buy ${orderId} (${tsym}) partially filled: ${partial.quantity}/${qty} @ ${partial.price} - booked and protected`);
+                        if (!live) return partial;
+                        livePartial = partial;
+                    }
+                    throw e;
+                }
+                Log.log(`[order] Filled (manual) ${tsym} at ${entryPrice} for ${userId} via Breeze`);
+                const trade = build(qty, entryPrice);
+                await book(trade);
+                return trade;
             });
-        } catch (e: any) {
-            const live = !!(e?.orderMayBeLive || e?.fillStateUnknown);
-            if (!live) untrackPendingBreezeLimitOrder(orderId); // terminal at the broker, nothing more can fill; a partial was booked above
-            else Log.log(`[order] ALERT: manual Breeze buy ${orderId} (${tsym}, ${userId}) not confirmed ${e?.fillStateUnknown ? 'fill state unknown' : 'cancel failed'} - order may still be live, left on the pending poller, check the broker`);
-            if (partial) {
-                Log.log(`[order] manual Breeze buy ${orderId} (${tsym}) partially filled: ${partial.quantity}/${qty} @ ${partial.price} - booked and protected`);
-                return partial;
-            }
+        } catch (e) {
+            if (livePartial) return livePartial;
             throw e;
         }
-        untrackPendingBreezeLimitOrder(orderId);
-        Log.log(`[order] Filled (manual) ${tsym} at ${entryPrice} for ${userId} via Breeze`);
-        const trade = build(qty, entryPrice);
-        await book(trade);
-        return trade;
     };
     return manualBuyChunked({
         label: 'manualBuyChunked', userId, tradingSymbol: tsym, exchange: contract.exchange, quantity, placeOne,

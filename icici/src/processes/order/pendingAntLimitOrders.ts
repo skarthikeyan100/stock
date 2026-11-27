@@ -220,3 +220,6 @@ export const pollPendingAntLimitOrders = tracker.poll;
 export const pendingAntSellsFor = (userId: string, tradingSymbol: string): PendingAntLimitOrder[] =>
     tracker.find(userId, tradingSymbol).filter((o) => o.action === 'Sell');
 export const isPendingAntOrder = (orderId: string): boolean => tracker.get(orderId) !== undefined;
+// A buy an executor waits for (see PendingOrderTracker.awaitBuy).
+export const awaitAntBuy = tracker.awaitBuy;
+export const isHeldAntOrder = tracker.isHeld;

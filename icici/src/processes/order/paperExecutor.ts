@@ -8,6 +8,7 @@ import bookkeeping from './bookkeeping';
 import { DataLink } from '../../ipc/DataLink';
 import { BrokerExecutor, OptionExchange, OrderAlreadyFilledError, ResolvedContract, emptyExitTrade } from './BrokerExecutor';
 import type { CancelledListener } from './pendingOrderTracker';
+import { BUY_FILL_WAIT } from '../../util/fillWait';
 
 // The `paper` broker: not a real broker. Everything lives in this process's memory - orders, fills, positions - and nothing is read from
 // or written to Mongo (bookkeeping skips every Mongo write for broker 'paper'), so a restart forgets it all.
@@ -227,13 +228,12 @@ async function marketSellOf(userId: string, tsym: string, token: string | undefi
 }
 
 // An intended market buy: priced by the central order price (the best bid, like every real broker) and placed as a limit buy that rests until the
-// market is at or below it. Like the real executors it waits for the fill, and on timeout cancels and throws (nothing is booked then).
-const MARKET_BUY_WAIT_MS = 30000;
+// market is at or below it. Like the real executors it waits BUY_FILL_WAIT for the fill, and on timeout cancels and throws (nothing is booked then).
 async function marketBuyOf(userId: string, tsym: string, token: string, quantity: number, exchange: OptionExchange): Promise<Trade> {
     const price = await orderPriceOf({ side: 'BUY', tsym, token, exchange, broker: 'paper' });
     const { orderId } = await placeLimit('Buy', userId, tsym, token, quantity, price, exchange);
-    const until = Date.now() + MARKET_BUY_WAIT_MS;
-    while (Date.now() < until) {
+    const until = Date.now() + BUY_FILL_WAIT.ms;
+    for (;;) {
         const done = fills.find((f) => f.orderId === orderId);
         if (done) {
             const t = new Trade();
@@ -241,11 +241,14 @@ async function marketBuyOf(userId: string, tsym: string, token: string, quantity
             t.action = 'Buy'; t.status = 'COMPLETE'; t.user = userId; t.broker = 'paper'; t.brokerOrderId = orderId;
             return t; // already booked by the fill itself (fillOrder)
         }
+        // Gone with no fill: cancelled meanwhile (lock-profits, a stop). A fill removes the order before it is listed, so one more pass reads it.
+        if (!orders.has(orderId) && !filledQty.has(orderId)) throw new Error(`paper: buy ${tsym} @ ${price} (best bid) was cancelled before it filled`);
+        if (Date.now() >= until) break;
         await new Promise((r) => setTimeout(r, 250));
     }
     const o = orders.get(orderId);
     if (o) { orders.delete(orderId); releaseTick(o); bookkeeping.releaseReservationForOrder(orderId, 'paper'); }
-    throw new Error(`paper: buy ${tsym} @ ${price} (best bid) did not fill within ${MARKET_BUY_WAIT_MS / 1000}s - cancelled`);
+    throw new Error(`paper: buy ${tsym} @ ${price} (best bid) did not fill within ${BUY_FILL_WAIT.ms / 1000}s - cancelled`);
 }
 
 const unsupported = (what: string) => async (): Promise<never> => { throw new Error(`paper broker does not support ${what}`); };

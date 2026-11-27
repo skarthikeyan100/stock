@@ -1,6 +1,6 @@
 import { ownerFields } from './neverShortClass';
 import Log from '../../util/Log';
-import { cancelThenRecheck, fillStateUnknownError } from '../../util/fillWait';
+import { cancelThenRecheck, fillStateUnknownError, buyPollMs, BUY_FILL_WAIT } from '../../util/fillWait';
 import Prism from '../../prism';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
@@ -9,7 +9,7 @@ import PrismContractMaster from '../../prism/PrismContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
 import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, emptyExitTrade } from './BrokerExecutor';
-import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol, beginCancelOfPendingPrismLimitOrders, endCancelOfPendingPrismLimitOrders, silenceListenersOfPendingPrismLimitOrders, prismRestingSells } from './pendingPrismLimitOrders';
+import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol, beginCancelOfPendingPrismLimitOrders, endCancelOfPendingPrismLimitOrders, silenceListenersOfPendingPrismLimitOrders, prismRestingSells, awaitPrismBuy } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
 import { roundToTick } from '../../util/tick';
 import { orderPriceOf } from './orderPrice';
@@ -129,10 +129,22 @@ export async function sellContract(userId: string, contract: string, quantity: n
 const BUY_FILL_POLL_ATTEMPTS = 6;
 const BUY_FILL_POLL_DELAY_MS = 2500;
 
-async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userId: string): Promise<number> {
+// `waitMs`: a buy's wait (BUY_FILL_WAIT): polled until that long has passed (2.5 s apart for the first 15 s, then 5 s), a failed status read
+// being retried. Omitted (sells and square-off exits): BUY_FILL_POLL_ATTEMPTS polls, a failed read ending the wait.
+async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userId: string, waitMs?: number): Promise<number> {
     const prism = Prism.getInstance();
-    for (let attempt = 1; attempt <= BUY_FILL_POLL_ATTEMPTS; attempt++) {
-        const { status, fillPrice, filledQuantity, reason } = await prism.getOrderStatus(orderId);
+    const started = Date.now();
+    for (let attempt = 1; waitMs ? attempt === 1 || Date.now() - started < waitMs : attempt <= BUY_FILL_POLL_ATTEMPTS; attempt++) {
+        let read: Awaited<ReturnType<typeof prism.getOrderStatus>>;
+        try {
+            read = await prism.getOrderStatus(orderId);
+        } catch (e: any) {
+            if (!waitMs) throw e;
+            Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}): status read failed during the fill wait, retrying: ${e?.message ?? e}`);
+            await sleep(buyPollMs(Date.now() - started));
+            continue;
+        }
+        const { status, fillPrice, filledQuantity, reason } = read;
         if (status === 'COMPLETE') {
             if (!fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`), { fillStateUnknown: true, orderMayBeLive: false });
             return fillPrice;
@@ -152,7 +164,8 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
             Object.assign(refusal, { orderTerminal: true });
             throw nothingFilled ? markNotPlaced(refusal) : refusal;
         }
-        if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
+        if (waitMs) await sleep(Date.now() - started < BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS ? BUY_FILL_POLL_DELAY_MS : 5000);
+        else if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
     }
     // Re-check status AFTER the cancel attempt (see cancelThenRecheck), rather than assuming "not filled" the moment polling ran
     // out: the order can genuinely fill in the race window (or the cancel can fail precisely BECAUSE the order just completed).
@@ -190,7 +203,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         });
     }
     if (settled.cancelFailed) Log.log(`[order] ALERT: Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and the cancel failed - it may still be resting live at the broker`);
-    throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`), { orderMayBeLive: settled.cancelFailed, orderTerminal: !settled.cancelFailed });
+    throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${waitMs ?? BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`), { orderMayBeLive: settled.cancelFailed, orderTerminal: !settled.cancelFailed });
 }
 
 export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
@@ -233,50 +246,54 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
     const prism = Prism.getInstance();
     const limitPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange: (exchange as 'NFO' | 'BFO') ?? 'NFO', broker: 'prism' });
     const { orderId } = await prism.placeLimitBuyBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, (exchange as 'NFO' | 'BFO') ?? 'NFO');
-    let fillPrice: number;
-    try {
-        fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
-    } catch (e: any) {
-        // Not proven dead (cancel failed, status unreadable, filled with no price): the order goes on the pending poller, so a strategy's
-        // cancelRestingLimitBuys finds it (a failed cancel must not read as "nothing rests" and be bought again) and a late fill is booked.
-        if (!e?.orderTerminal) {
-            if (e && typeof e === 'object' && !e.fillStateUnknown) e.orderMayBeLive = true;
-            trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange: (exchange as 'NFO' | 'BFO') ?? 'NFO', action: 'Buy', quiet: true });
-            Log.log(`[order] ALERT: Prism buy ${orderId} (${tradingSymbol}, ${userId}) may still be live - left on the pending poller, check the broker`);
+    // On the pending list from placement (awaitPrismBuy): lock-profits and the stop cancels find it, a restart does not orphan it.
+    return awaitPrismBuy({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange: (exchange as 'NFO' | 'BFO') ?? 'NFO' }, async () => {
+        let fillPrice: number;
+        try {
+            fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId, BUY_FILL_WAIT.ms);
+        } catch (e: any) {
+            // Not proven dead (cancel failed, status unreadable, filled with no price): the order stays on the pending poller, so a strategy's
+            // cancelRestingLimitBuys finds it (a failed cancel must not read as "nothing rests" and be bought again) and a late fill is booked.
+            if (!e?.orderTerminal) {
+                if (e && typeof e === 'object' && !e.fillStateUnknown) e.orderMayBeLive = true;
+                Log.log(`[order] ALERT: Prism buy ${orderId} (${tradingSymbol}, ${userId}) may still be live - left on the pending poller, check the broker`);
+            }
+            // Cancelled after a PARTIAL fill: those lots are a real position at the broker. Book them here (buyChunked and every caller
+            // assume a thrown partial is already booked) before rethrowing, or they would be live and unknown to bookkeeping.
+            if (e?.partial && e.filledQuantity > 0 && e.averagePrice > 0) {
+                const partial = new Trade();
+                partial.tsym = tradingSymbol;
+                partial.token = instrumentId;
+                partial.quantity = e.filledQuantity;
+                partial.price = e.averagePrice;
+                partial.lastTradePrice = e.averagePrice;
+                partial.action = 'Buy';
+                partial.status = 'COMPLETE';
+                partial.user = userId;
+                partial.broker = 'prism';
+                partial.brokerOrderId = orderId;
+                await bookkeeping.recordFill(partial);
+                // Booked and over at the broker: nothing is left for the poller.
+                if (e.orderTerminal) untrackPendingPrismLimitOrder(orderId);
+            }
+            throw e;
         }
-        // Cancelled after a PARTIAL fill: those lots are a real position at the broker. Book them here (buyChunked and every caller
-        // assume a thrown partial is already booked) before rethrowing, or they would be live and unknown to bookkeeping.
-        if (e?.partial && e.filledQuantity > 0 && e.averagePrice > 0) {
-            const partial = new Trade();
-            partial.tsym = tradingSymbol;
-            partial.token = instrumentId;
-            partial.quantity = e.filledQuantity;
-            partial.price = e.averagePrice;
-            partial.lastTradePrice = e.averagePrice;
-            partial.action = 'Buy';
-            partial.status = 'COMPLETE';
-            partial.user = userId;
-            partial.broker = 'prism';
-            partial.brokerOrderId = orderId;
-            await bookkeeping.recordFill(partial);
-        }
-        throw e;
-    }
 
-    const trade = new Trade();
-    trade.tsym = tradingSymbol;
-    trade.token = instrumentId;
-    trade.quantity = quantity;
-    trade.price = fillPrice;
-    trade.lastTradePrice = fillPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.user = userId;
-    trade.broker = 'prism';
-    trade.brokerOrderId = orderId;
+        const trade = new Trade();
+        trade.tsym = tradingSymbol;
+        trade.token = instrumentId;
+        trade.quantity = quantity;
+        trade.price = fillPrice;
+        trade.lastTradePrice = fillPrice;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.user = userId;
+        trade.broker = 'prism';
+        trade.brokerOrderId = orderId;
 
-    await bookkeeping.recordFill(trade);
-    return trade;
+        await bookkeeping.recordFill(trade);
+        return trade;
+    });
 }
 
 // ButterflyStrategy's narrow sell-to-open exception ONLY. Must poll real order status via

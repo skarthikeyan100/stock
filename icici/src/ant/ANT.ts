@@ -10,6 +10,7 @@ import { sleep } from '../util/sleep';
 import { antOrderAveragePrices } from './tradeBook';
 import AntContractMaster from './AntContractMaster';
 import { SessionValidityCache } from '../util/SessionValidityCache';
+import { buyPollMs, FillWaitBuy } from '../util/fillWait';
 
 // One contract's figures for the Search & Buy panel (see ANT.getContractSnapshot). null = ANT returned no usable value.
 export interface ContractSnapshot {
@@ -867,25 +868,37 @@ class ANT {
     // status rather than trusting array position. Fill price field is
     // `averageTradedPrice` (confirmed live), populated only on the COMPLETE
     // record.
-    async getFillPrice(orderNo: string, maxAttempts = 12, intervalMs = 5000): Promise<number> {
+    // `buy`: a buy's wait (fillWait.BUY_FILL_WAIT): polled until `until` (maxAttempts is ignored), the interval growing after a minute; no
+    // poll failure ends the wait early, only a terminal order status does. `pause` waits between two polls and returns the price when the
+    // order-notify push reports the fill meanwhile.
+    async getFillPrice(orderNo: string, maxAttempts = 12, intervalMs = 5000, buy?: FillWaitBuy): Promise<number> {
         // Headers built once, outside the retry loop: an absent/expired session throws
         // here and must fail fast rather than be retried as if it were a network blip.
         const headers = this.orderHistoryHeaders();
         let lastPollError: unknown = null;
         let anyPollSucceeded = false;
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const isLast = attempt === maxAttempts - 1;
+        const started = Date.now();
+        // Between two polls: a buy's wait listens for the push meanwhile (and returns its price).
+        const between = async (): Promise<number | undefined> => {
+            if (!buy) { await sleep(intervalMs); return undefined; }
+            return buy.pause(Math.min(buyPollMs(Date.now() - started, intervalMs), Math.max(0, buy.until - Date.now())));
+        };
+        for (let attempt = 0; buy ? attempt === 0 || Date.now() < buy.until : attempt < maxAttempts; attempt++) {
+            const isLast = !buy && attempt === maxAttempts - 1;
             let records: any[];
             try {
                 records = await this.postOrderHistory(orderNo, headers);
                 anyPollSucceeded = true;
             } catch (pollErr: any) {
-                if (!ANT.isTransientPollError(pollErr)) throw pollErr;
+                if (!buy && !ANT.isTransientPollError(pollErr)) throw pollErr;
                 // A transient error on one poll must not abort the loop - the order may
                 // well have filled and the next poll would see it.
                 lastPollError = pollErr;
-                Log.log(`[ANT.getFillPrice] poll ${attempt + 1}/${maxAttempts} for ${orderNo} transient error, retrying: ${pollErr?.message ?? pollErr}`);
-                if (!isLast) await sleep(intervalMs);
+                Log.log(`[ANT.getFillPrice] poll ${attempt + 1}${buy ? '' : `/${maxAttempts}`} for ${orderNo} transient error, retrying: ${pollErr?.message ?? pollErr}`);
+                if (!isLast) {
+                    const pushed = await between();
+                    if (pushed !== undefined) return pushed;
+                }
                 continue;
             }
             const completed = records.find((r) => r.orderStatus === 'COMPLETE');
@@ -906,14 +919,17 @@ class ANT {
                     { filledQuantity, averagePrice }
                 );
             }
-            if (!isLast) await sleep(intervalMs);
+            if (!isLast) {
+                const pushed = await between();
+                if (pushed !== undefined) return pushed;
+            }
         }
         // Only claim UNKNOWN when no poll ever reached the broker. If some polls succeeded
         // and showed a non-terminal status, the order is known to be open, not unknown.
         const unknown = !anyPollSucceeded && lastPollError
             ? ` - fill status UNKNOWN (no poll succeeded), last poll error: ${(lastPollError as any)?.message ?? lastPollError}`
             : '';
-        throw new Error(`ANT order ${orderNo} did not complete within ${maxAttempts * intervalMs}ms${unknown}`);
+        throw new Error(`ANT order ${orderNo} did not complete within ${buy ? Date.now() - started : maxAttempts * intervalMs}ms${unknown}`);
     }
 
     // Shared by getFillPrice and getOrderStatus so the endpoint, headers and response

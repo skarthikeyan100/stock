@@ -34,6 +34,8 @@ export interface MirrorLeg {
     place: (adminId: string, qty: number) => Promise<unknown>;
     /** A resting limit entry (a contractor's recommendation): the user has no position yet, the admin rests the same limit with the same exits. */
     resting?: boolean;
+    /** True while the user's own buy still waits for its fill (set by orderProcess for a market buy). */
+    userPending?: boolean;
 }
 /** Returns a promise that settles when the mirror attempt is over (never rejects), or nothing when no mirror was started. */
 export type MirrorHook = (leg: MirrorLeg) => Promise<void> | void;
@@ -101,7 +103,8 @@ export const startMirrorBuy: MirrorHook = (leg) => {
                 { upsert: true },
             );
             // The user may have sold while the admin order was filling: that sell found no row to follow, so close now.
-            if (!leg.resting && openQty(leg.userId, leg.token) <= 0) await closeMirror(leg.userId, leg.token, undefined);
+            // Not while the user's own buy still waits for its fill (a failed one is taken back by undoMirrorBuy).
+            if (!leg.resting && !leg.userPending && openQty(leg.userId, leg.token) <= 0) await closeMirror(leg.userId, leg.token, undefined);
             if (partialErr) throw partialErr; // booked above, still reported as an ALERT by the handler below
         }).then(() => undefined, (e) => { Log.log(`[order] ALERT: mirror buy of ${leg.tsym} for ${leg.userId} (qty=${qty}) failed - the user's order is unaffected:`, e); });
     } catch (e) {

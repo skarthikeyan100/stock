@@ -4,6 +4,7 @@ import Breeze from '../../breeze/Breeze';
 import Kite from '../../kite/Kite';
 import bookkeeping from './bookkeeping';
 import { TRACKERS } from './pendingTrackers';
+import { BUY_FILL_WAIT } from '../../util/fillWait';
 import { OptionExchange, OrderAlreadyFilledError } from './BrokerExecutor';
 
 // The resting limit orders a frontend user placed at the price they clicked (a buy: lockedEntry.ts, a square-off: lockedSquareOff.ts), as the
@@ -169,8 +170,9 @@ export async function cancelLockedOrder(userId: string, broker: string, orderId:
     return result;
 }
 
-// A partly filled resting BUY books (and gets its target / stop) only once the order is over, so the rest is not left waiting: after this long
-// partly filled it is cancelled, and the filled part is booked and protected.
+// A partly filled resting BUY books (and gets its target / stop) only once the order is over, so the rest is not left waiting: once it has been
+// partly filled this long AND the order is at least BUY_FILL_WAIT old (a buy is never cancelled for not filling before that, user's rule
+// 2026-11-27), it is cancelled, and the filled part is booked and protected.
 export const PARTIAL_FILL_GRACE_MS = 20_000;
 const partialSince = new Map<string, number>();
 
@@ -200,10 +202,10 @@ export async function sweepPartialBuys(now: number = Date.now()): Promise<void> 
         if (!(filled > 0 && filled < t.quantity)) { partialSince.delete(key); continue; }
         const since = partialSince.get(key);
         if (since === undefined) { partialSince.set(key, now); continue; }
-        if (now - since < PARTIAL_FILL_GRACE_MS) continue;
+        if (now - since < PARTIAL_FILL_GRACE_MS || now - o.placedAt < BUY_FILL_WAIT.ms) continue;
         partialSince.delete(key);
         try {
-            const r = await cancelLockedOrder(o.userId, o.broker, o.orderId, `partly filled (${filled}/${t.quantity}) for ${PARTIAL_FILL_GRACE_MS / 1000}s`);
+            const r = await cancelLockedOrder(o.userId, o.broker, o.orderId, `partly filled (${filled}/${t.quantity}) ${Math.round((now - o.placedAt) / 60_000)} min after placement`);
             notifyUser(o.userId, `Limit buy of ${o.tsym} at ${o.price} filled only partly (${r.filledQuantity ?? filled} of ${t.quantity}); the rest was cancelled and the bought quantity gets your target / stop-loss.`);
         } catch (e) {
             Log.log(`[order] ALERT: partly filled limit buy ${o.orderId} (${o.tsym}, ${o.userId}) could not be cancelled - the filled part has no target / stop until the order ends:`, e);

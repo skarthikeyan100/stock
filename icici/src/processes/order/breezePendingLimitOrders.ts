@@ -80,3 +80,6 @@ export const endCancelOfBreezePendingLimitOrders = tracker.endCancel;
 export const silenceListenersOfBreezePendingLimitOrders = tracker.silenceListeners;
 export const loadPendingBreezeLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingBreezeLimitOrders = tracker.poll;
+// A buy an executor waits for (see PendingOrderTracker.awaitBuy).
+export const awaitBreezeBuy = tracker.awaitBuy;
+export const isHeldBreezeOrder = tracker.isHeld;

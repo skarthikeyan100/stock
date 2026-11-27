@@ -54,6 +54,13 @@ function validateBuyQuery(q: Record<string, unknown>): string | null {
 // distinct routes elsewhere.
 const MAX_FRONTEND_TRADES_PER_DAY = 3;
 
+// A buy waits up to 5 minutes for its fill (BUY_FILL_WAIT), longer than the page's request can live (Cloudflare ends one after about 100 s). A buy
+// still waiting after `afterMs` is answered "still waiting" and runs on; the same buy is refused while it does, so it is not placed twice, and it
+// counts towards the daily trade limit. An object so a unit test can shorten it.
+export const MANUAL_BUY_REPLY = { afterMs: 75_000 };
+const STILL_WAITING = 'Your buy is placed and still waiting to fill. It is cancelled if it has not filled 5 minutes after placement. Check your positions before buying again.';
+const buysWaiting = new Map<string, Set<string>>(); // user -> the buys (contract, or index / side / strike) still waiting
+
 router.post('/order/buy', requireAuth, async function (req: express.Request, res) {
     try {
         const { right, index, strikePrice, price, contract, targetPoints, stopLossPoints } = req.query;
@@ -79,12 +86,18 @@ router.post('/order/buy', requireAuth, async function (req: express.Request, res
             for (const t of [...trades, ...closedTrades]) {
                 if (t.user === user && isOpenedToday(t.entryTime)) started.add(`${t.broker}|${t.token}|${new Date(t.entryTime).getTime()}`);
             }
-            if (started.size >= MAX_FRONTEND_TRADES_PER_DAY) {
-                res.status(403).json({ error: `Trade limit reached: at most ${MAX_FRONTEND_TRADES_PER_DAY} trades a day in investment-amount mode (${started.size} today)` });
+            const waiting = buysWaiting.get(user)?.size ?? 0;
+            if (started.size + waiting >= MAX_FRONTEND_TRADES_PER_DAY) {
+                res.status(403).json({ error: `Trade limit reached: at most ${MAX_FRONTEND_TRADES_PER_DAY} trades a day in investment-amount mode (${started.size} today${waiting ? `, ${waiting} waiting to fill` : ''})` });
                 return;
             }
         }
-        const result = await orderClient.manualBuy(user, {
+        const buyKey = contract ? String(contract) : `${index ?? ''}|${right ?? ''}|${strikePrice ?? ''}`;
+        const mine = buysWaiting.get(user) ?? new Set<string>();
+        if (mine.has(buyKey)) { res.status(409).json({ error: STILL_WAITING }); return; }
+        mine.add(buyKey); // synchronous with the check: two clicks cannot both pass
+        buysWaiting.set(user, mine);
+        const order = orderClient.manualBuy(user, {
             index: index as any,
             right: right as string,
             contract: contract as string,
@@ -92,8 +105,19 @@ router.post('/order/buy', requireAuth, async function (req: express.Request, res
             price: price ? parseFloat(price as string) : undefined,
             targetPoints: gate.targetPoints,
             stopLossPoints: gate.stopLossPoints,
+        }).finally(() => {
+            mine.delete(buyKey);
+            if (mine.size === 0 && buysWaiting.get(user) === mine) buysWaiting.delete(user);
         });
-        res.json(result);
+        let timer: NodeJS.Timeout | undefined;
+        const early = await Promise.race([
+            order.then((result) => ({ result })),
+            new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), MANUAL_BUY_REPLY.afterMs); }),
+        ]).finally(() => clearTimeout(timer));
+        if (early) { res.json(early.result); return; }
+        order.then(() => Log.log(`[order] ${user}: the buy ${buyKey} answered as still waiting has completed`))
+            .catch((e) => Log.log(`[order] ${user}: the buy ${buyKey} answered as still waiting FAILED:`, e));
+        res.status(409).json({ error: STILL_WAITING });
     } catch (e: any) {
         Log.log(e);
         res.status(e?.message?.includes('limit') ? 403 : 500).json({ error: e?.message ?? String(e) });
@@ -196,8 +220,9 @@ router.post('/order/buy-locked', requireAuth, requireCsrfHeader, async function 
                 for (const o of (await orderClient.userOrderState()).pending) {
                     if (o.userId === user && o.action === 'Buy' && !openContracts.has(`${o.broker}|${o.token}`)) resting.add(`${o.broker}|${o.token}`);
                 }
-                if (started.size + resting.size >= MAX_FRONTEND_TRADES_PER_DAY) {
-                    res.status(403).json({ error: `Trade limit reached: at most ${MAX_FRONTEND_TRADES_PER_DAY} trades a day in investment-amount mode (${started.size} today${resting.size ? `, ${resting.size} waiting to fill` : ''})` });
+                const waiting = resting.size + (buysWaiting.get(user)?.size ?? 0); // resting limit buys and market buys still waiting for their fill
+                if (started.size + waiting >= MAX_FRONTEND_TRADES_PER_DAY) {
+                    res.status(403).json({ error: `Trade limit reached: at most ${MAX_FRONTEND_TRADES_PER_DAY} trades a day in investment-amount mode (${started.size} today${waiting ? `, ${waiting} waiting to fill` : ''})` });
                     return;
                 }
             }

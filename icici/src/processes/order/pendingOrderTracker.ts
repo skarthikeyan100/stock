@@ -4,6 +4,7 @@ import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import { OptionExchange } from './BrokerExecutor';
 import Mongo from '../../tools/mongo';
+import { BUY_FILL_WAIT } from '../../util/fillWait';
 import type { BrokerName } from '../../util/brokerName';
 
 // One loop for every broker's resting limit orders: track, poll, book the fill, book a partial fill on cancel, tell the
@@ -24,6 +25,9 @@ export interface PendingOrder {
     /** An entry buy put on the poller because the entry call could not establish its outcome: its fill is booked and an explicit cancel finds it,
      *  but a cancel / reject seen by the poll is not told to the cancelled listeners (no strategy placed a resting order). Persisted. */
     quiet?: boolean;
+    /** A buy an executor waits for (awaitBuy): when it is still on the list after this time (epoch ms) and nobody waits for it any more (a
+     *  restart, a cancel that failed), the order process cancels it (waitedBuys.ts). Persisted. */
+    cancelAfter?: number;
     /** Filled quantity the last poll saw while the order was still open (not booked until it completes or is cancelled). Absent until a poll
      *  reports one (a broker whose open-order status carries none never sets it). In memory only. */
     seenFilled?: number;
@@ -98,6 +102,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     private readonly cancelling = new Map<string, number>();
     // Orders whose CANCELLED/REJECTED outcome must not reach the listeners (see silenceListeners); cleared by untrack.
     private readonly silenced = new Set<string>();
+    // Orders whose executor is waiting for the fill right now (awaitBuy): the poll leaves them to it, so one place books the fill, with its target / stop.
+    private readonly held = new Set<string>();
     private notReadyAlertedAt = 0;
 
     constructor(private readonly adapter: BrokerOrderAdapter<T, Snapshot, B>) {}
@@ -141,6 +147,27 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             .catch((e) => Log.log(`[order] ${this.adapter.collection}: Mongo persist failed for`, order.orderId, e));
     };
 
+    isHeld = (orderId: string): boolean => this.held.has(orderId);
+
+    // Runs an executor's fill wait `body` (which also books the fill) for a buy it just placed. The order is on the pending list from placement
+    // (persisted): lock-profits and the stop cancels find it, and a restart in the middle of the wait does not orphan it. It leaves the list when
+    // the order is certainly over (filled and booked, or ended with nothing filled); on any other outcome it stays, the poll books what filled
+    // and the cancel sweep (waitedBuys.ts) takes it back after cancelAfter. `quiet`: no strategy placed it as a resting order.
+    awaitBuy = async <R>(order: Omit<T, 'action' | 'quiet' | 'cancelAfter'>, body: () => Promise<R>): Promise<R> => {
+        this.held.add(order.orderId);
+        this.track({ ...order, action: 'Buy', quiet: true, cancelAfter: Date.now() + BUY_FILL_WAIT.ms } as unknown as T);
+        try {
+            const result = await body();
+            this.untrack(order.orderId);
+            return result;
+        } catch (e: any) {
+            if ((e?.notPlaced || e?.orderTerminal) && !(Number(e?.filledQuantity) > 0)) this.untrack(order.orderId);
+            throw e;
+        } finally {
+            this.held.delete(order.orderId);
+        }
+    };
+
     untrack = (orderId: string): void => {
         // Cancelled/rejected resting buys never fill, so nothing else would free the reservation they took (no-op after a fill).
         bookkeeping.releaseReservationForOrder(orderId, this.adapter.broker);
@@ -156,7 +183,12 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
         const db = Mongo.getInstance()?.db;
         if (!db) return;
         const rows = await db.collection(this.adapter.collection).find({}).toArray();
-        for (const row of rows) this.pending.set(row.orderId, this.adapter.fromDoc(row));
+        for (const row of rows) {
+            const order = this.adapter.fromDoc(row);
+            if (row.cancelAfter > 0) order.cancelAfter = row.cancelAfter;
+            if (row.quiet) order.quiet = true;
+            this.pending.set(row.orderId, order);
+        }
         if (rows.length > 0) {
             Log.log(`[order] ${this.adapter.collection}: restored ${rows.length} pending limit order(s) after restart`);
         }
@@ -209,7 +241,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
         const ordered = [...entries.slice(start), ...entries.slice(0, start)];
         for (let i = 0; i < ordered.length; i++) {
             const [orderId, order] = ordered[i];
-            if (!this.pending.has(orderId)) continue;
+            if (!this.pending.has(orderId) || this.held.has(orderId)) continue;
             if (Date.now() - pollStartedAt > POLL_BUDGET_MS) {
                 Log.log(`[order] poll pending ${label} limit orders: budget of ${POLL_BUDGET_MS}ms spent - the remaining orders are polled next tick`);
                 nextOffset = start + i; // the next poll starts at the first order not reached

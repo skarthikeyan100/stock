@@ -28,6 +28,7 @@ import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping, { MongoRestoreResult, EodBrokerReport } from './order/bookkeeping';
 import { onEntryFill, onEntryCancelled } from './order/entryExits';
+import { sweepWaitedBuys, cancelWaitedBuysOf, WaitedBuyCanceller } from './order/waitedBuys';
 import { lockedBuyOnBroker, loadLockedEntries, LockedBuyResult } from './order/lockedEntry';
 import { squareOffAtPrice, sweepUserExits, onExitFill, loadUserExits } from './order/lockedSquareOff';
 import { userOrderState, pendingLockedOrders, cancelLockedOrder, onLockedFill, onLockedTrackerCancel, sweepPartialBuys, setLockedCanceller } from './order/lockedOrders';
@@ -853,13 +854,15 @@ async function manualBuyOnOneBroker(req: OrderRequest, manualBuyBroker: string, 
         // mirror: a frontend user's buy is copied by the admin (mirror.ts; settings.mirrorPercentage). If the user's own order then
         // fails, the admin's matching quantity is taken back so it does not sit open without the user's.
         const started: Array<{ leg: MirrorLeg; done: Promise<void> | void }> = [];
-        const mirror: MirrorHook | undefined = mirrored ? (leg) => { const done = startMirrorBuy(leg); started.push({ leg, done }); return done; } : undefined;
+        // userPending: while the user's own buy still waits for its fill, an admin order that fills first is not "the user sold meanwhile".
+        const mirror: MirrorHook | undefined = mirrored ? (leg) => { leg.userPending = true; const done = startMirrorBuy(leg); started.push({ leg, done }); return done; } : undefined;
         const buy = manualBuyBroker === 'ant'
             ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...payload, mirror })
             : manualBuyBroker === 'breeze'
                 ? manualBuyOnBreeze({ userId: req.userId, ...payload, mirror })
                 : manualBuyOnKite({ userId: req.userId, ...payload, mirror });
-        return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done, e?.partial ? Number(e.filledQuantity) || 0 : 0); throw e; });
+        return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done, e?.partial ? Number(e.filledQuantity) || 0 : 0); throw e; })
+            .finally(() => { for (const s of started) s.leg.userPending = false; });
     });
 }
 
@@ -1734,6 +1737,8 @@ async function onTick(tick: any) {
 
 const ownSocket = ownSocketTracker(); // see ipc/ownSocket.ts
 
+const cancelWaitedBuy: WaitedBuyCanceller = (broker, userId, orderId, exchange) => getBrokerExecutor(userId, broker).cancelOrder(orderId, exchange);
+
 export async function startOrderProcess() {
     // Warm every broker's contract master before the IPC socket accepts requests, so the first
     // order inside a trading window doesn't pay the file parse. Breeze's daily refresh runs
@@ -1810,6 +1815,8 @@ export async function startOrderProcess() {
         for (const o of pendingLockedOrders().filter((p) => p.userId === user && p.action === 'Buy')) {
             void cancelLockedOrder(user, o.broker, o.orderId, 'drawdown limit breached').catch((e) => Log.log('[order] drawdown breach: cancelling the resting buy failed for', o.tsym, e));
         }
+        // Nor a buy an executor is still waiting on (it can rest for BUY_FILL_WAIT).
+        void cancelWaitedBuysOf(user, cancelWaitedBuy, 'drawdown limit breached').catch((e) => Log.log('[order] drawdown breach: cancelling the waiting buys failed for', user, e));
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
                 await forceCloseTrade(trade);
@@ -1869,6 +1876,7 @@ export async function startOrderProcess() {
     guardedInterval('unresolvedFillsTick', async () => unresolvedFillsTick(), 5 * 60_000);
     guardedInterval('sweepUserExits', () => sweepUserExits(), 4_000); // puts a position's GTT back once its square-off sell is gone
     guardedInterval('sweepPartialBuys', () => sweepPartialBuys(), 5_000); // a partly filled locked-price buy is cut so its fill is booked and protected
+    guardedInterval('sweepWaitedBuys', () => sweepWaitedBuys(cancelWaitedBuy), 5_000); // a waited entry buy orphaned by a restart / failed cancel, or overtaken by EOD / the global max profit
     for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name === 'kite' ? '' : name[0].toUpperCase() + name.slice(1)}LimitOrders`, () => TRACKERS[name].poll(), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than

@@ -467,9 +467,12 @@ class Kite {
         orderId: string,
         maxAttempts = 12,
         intervalMs = 5000,
-        driftCheck?: { limitPrice: number; driftPoints: number; getLtp: () => Promise<number> }
+        driftCheck?: { limitPrice: number; driftPoints: number; getLtp: () => Promise<number> },
+        // A buy's wait (fillWait.BUY_FILL_WAIT): polled until this much time has passed, however many polls that takes (maxAttempts is ignored).
+        waitMs?: number
     ): Promise<number> {
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const deadline = waitMs ? Date.now() + waitMs : undefined;
+        for (let attempt = 0; deadline ? attempt === 0 || Date.now() < deadline : attempt < maxAttempts; attempt++) {
             // A transient history-fetch failure must not abort the wait: that would skip the
             // timeout-cancel below and leave a live order resting, untracked.
             let latest: any;
@@ -477,7 +480,7 @@ class Kite {
                 const history = await this.kc.getOrderHistory(orderId);
                 latest = history[history.length - 1];
             } catch (e) {
-                Log.log(`[Kite] getOrderHistory failed for order ${orderId} (attempt ${attempt + 1}/${maxAttempts}) - will retry:`, e);
+                Log.log(`[Kite] getOrderHistory failed for order ${orderId} (attempt ${attempt + 1}${deadline ? '' : `/${maxAttempts}`}) - will retry:`, e);
                 await sleep(intervalMs);
                 continue;
             }
@@ -572,7 +575,8 @@ class Kite {
             throw fillStateUnknownError(`Kite order ${orderId} fill-price timeout: the status re-check failed: ${(settled.recheckError as any)?.message ?? settled.recheckError}`, settled.cancelFailed);
         }
         if (settled.orderMayBeLive) Log.log(`[Kite] ALERT: order ${orderId} did not fill within the timeout and the cancel failed - it may still be resting live at the broker`);
-        throw Object.assign(new Error(`Kite order ${orderId} did not fill within timeout`), { orderMayBeLive: settled.orderMayBeLive });
+        // orderTerminal: the cancel went through and the re-check shows nothing filled - the order is over (PendingOrderTracker.awaitBuy).
+        throw Object.assign(new Error(`Kite order ${orderId} did not fill within timeout${waitMs ? ` (${Math.round(waitMs / 1000)}s)` : ''}`), { orderMayBeLive: settled.orderMayBeLive, ...(!settled.cancelFailed && settled.result?.outcome === 'none' ? { orderTerminal: true } : {}) });
     }
 
     // Cancel an order we have stopped waiting for, then ALWAYS re-check it (see cancelThenRecheck). `orderMayBeLive` is true only when
