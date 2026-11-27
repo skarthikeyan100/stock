@@ -14,9 +14,14 @@ export type PageIndex = 'NIFTY' | 'SENSEX';
 
 /** A contract and the price shown for it: what a buy click captures. */
 export interface PricedContract { contract: string; strike: number; token: string; tradingSymbol: string; price: number }
-export interface PendingOrder { orderId: string; broker: string; tsym: string; token: string; action: 'Buy' | 'Sell'; quantity: number; filled: number; price: number }
+export interface PendingOrder {
+  orderId: string; broker: string; tsym: string; token: string; action: 'Buy' | 'Sell'; quantity: number; filled: number; price: number;
+  /** Just sent from this page and not yet listed by the price stream: it cannot be cancelled yet. */
+  unconfirmed?: boolean;
+}
 export interface OrderNotice { id: string; variant: 'success' | 'warning' | 'danger' | 'info'; text: string }
 
+interface PlacedReply { ok: boolean; broker: string; tsym?: string; quantity?: number; limitPrice?: number; orderIds?: string[]; error?: string }
 interface StreamQuote { contract: string; strike: number; token: string; tradingSymbol: string; price: number | null; ageMs: number | null }
 interface StreamMessage {
   index: PageIndex;
@@ -48,6 +53,8 @@ const BUY_STALE_MS = 15_000;
 const SELL_STALE_MS = 30_000;
 // Buttons stay disabled this long after an order, so a double click cannot place a second one.
 const CLICK_COOLDOWN_MS = 1_000;
+// An order shown from the server's reply is dropped after this long if the price stream never lists it.
+const JUST_SENT_MS = 10_000;
 const INDEX_KEY = 'tradingIndex';
 
 export function readSavedIndex(): PageIndex {
@@ -56,6 +63,10 @@ export function readSavedIndex(): PageIndex {
 export function saveIndex(index: PageIndex): void {
   try { localStorage.setItem(INDEX_KEY, index); } catch { /* storage unavailable: the choice lasts for this page only */ }
 }
+
+/** An order the server has just accepted from this page, shown as pending until the price stream knows it. */
+interface JustSent { order: PendingOrder; keys: string[]; sentAt: number }
+const orderKey = (broker: string, orderId: string) => `${broker}:${orderId}`;
 
 export const rupees = (v: number) => `₹${v.toFixed(2)}`;
 
@@ -102,6 +113,9 @@ export function useLockedOrders({ mode, index, setPlacing, setError, describeErr
   const [now, setNow] = useState(() => Date.now());
   const busy = useRef<Set<string>>(new Set()); // 'buy', or one position / order: a second click on the same thing is ignored
   const seenOutcomes = useRef<Set<string> | null>(null); // null until the first message: what had already happened then is not announced
+  const [justSent, setJustSent] = useState<JustSent[]>([]);
+  const listedOrders = useRef<Set<string>>(new Set()); // every order the stream has listed, as pending or as ended
+  const cancelledHere = useRef<Set<string>>(new Set()); // orders cancelled with this page's button: their cancellation is not announced
   const noticeCount = useRef(0);
 
   const addNotice = useCallback((variant: OrderNotice['variant'], text: string) => {
@@ -127,16 +141,22 @@ export function useLockedOrders({ mode, index, setPlacing, setError, describeErr
         setStream({ message, receivedAt });
         setNow(receivedAt);
         if (message.pending) setPending(message.pending);
+        for (const o of message.pending ?? []) listedOrders.current.add(orderKey(o.broker, o.orderId));
+        for (const o of message.outcomes ?? []) listedOrders.current.add(o.id.split(':', 2).join(':')); // an outcome id starts with broker:orderId
+        setJustSent((prev) => {
+          const next = prev.filter((s) => receivedAt - s.sentAt < JUST_SENT_MS && !s.keys.some((k) => listedOrders.current.has(k)));
+          return next.length === prev.length ? prev : next;
+        });
         if (!message.outcomes) return;
         const first = seenOutcomes.current === null;
         const seen = (seenOutcomes.current ??= new Set<string>());
         for (const o of message.outcomes) {
           if (seen.has(o.id)) continue;
           seen.add(o.id);
-          if (first) continue;
+          if (first || o.status === 'filled') continue; // a fill shows in the positions: only an order that ended without one is announced
+          if (o.status === 'cancelled' && cancelledHere.current.has(o.id.split(':', 2).join(':'))) continue;
           const what = `${o.action === 'Buy' ? 'buy' : 'sell'} of ${o.quantity} ${o.tsym}`;
-          if (o.status === 'filled') addNotice('success', `${o.action === 'Buy' ? 'Bought' : 'Sold'} ${o.quantity} ${o.tsym} at ${rupees(o.price)}.`);
-          else addNotice(o.status === 'rejected' ? 'danger' : 'warning', `Limit ${what} at ${rupees(o.price)} was ${o.status}${o.reason ? `: ${describeError(o.reason)}` : ''}.`);
+          addNotice(o.status === 'rejected' ? 'danger' : 'warning', `Limit ${what} at ${rupees(o.price)} was ${o.status}${o.reason ? `: ${describeError(o.reason)}` : ''}.`);
         }
       } catch (e) {
         console.error('[PriceStream] bad message:', e);
@@ -176,47 +196,67 @@ export function useLockedOrders({ mode, index, setPlacing, setError, describeErr
       return true;
     } catch (e) {
       console.error('[Order] request failed:', e);
-      setError('Network error - check Pending orders and your positions before trying again');
+      setError('Network error - check your Active Positions before trying again');
       return false;
     } finally {
       setTimeout(() => { busy.current.delete(key); if (buying) setPlacing(false); }, CLICK_COOLDOWN_MS);
     }
   };
 
-  const boughtReply = (reply: any) => {
-    const results: Array<{ ok: boolean; broker: string; tsym?: string; quantity?: number; limitPrice?: number; error?: string }> = reply?.results ?? [];
+  const showAsPending = (action: 'Buy' | 'Sell', token: string, r: PlacedReply) => {
+    const orderIds = r.orderIds ?? [];
+    const keys = orderIds.map((id) => orderKey(r.broker, id));
+    if (keys.length === 0 || keys.some((k) => listedOrders.current.has(k))) return; // the stream was quicker than the reply
+    const order: PendingOrder = { orderId: orderIds[0], broker: r.broker, tsym: r.tsym ?? '', token, action, quantity: r.quantity ?? 0, filled: 0, price: r.limitPrice ?? 0, unconfirmed: true };
+    setJustSent((prev) => [...prev, { order, keys, sentAt: Date.now() }]);
+  };
+
+  const boughtReply = (token: string) => (reply: any) => {
+    const results: PlacedReply[] = reply?.results ?? [];
     for (const r of results) {
-      if (r.ok) addNotice(r.error ? 'warning' : 'info', `Limit buy of ${r.quantity} ${r.tsym} at ${rupees(r.limitPrice ?? 0)} placed on ${r.broker.toUpperCase()}. It stays under Pending orders until it fills.${r.error ? ` ${describeError(r.error)}` : ''}`);
+      if (!r.ok) continue;
+      showAsPending('Buy', token, r);
+      if (r.error) addNotice('warning', `${r.tsym}: ${describeError(r.error)}`);
     }
     const failed = results.filter((r) => !r.ok);
     if (failed.length > 0) setError(`Not placed on ${failed.map((r) => `${r.broker}: ${describeError(r.error ?? '')}`).join('; ')}`);
   };
 
   const buyFlash = (right: 'call' | 'put', shown: PricedContract) =>
-    send('buy', '/order/buy-locked', { index: shown.contract.split('_')[0], right, strikePrice: shown.strike, token: shown.token, limitPrice: shown.price }, boughtReply);
+    send('buy', '/order/buy-locked', { index: shown.contract.split('_')[0], right, strikePrice: shown.strike, token: shown.token, limitPrice: shown.price }, boughtReply(shown.token));
 
   const buyContract = (shown: PricedContract, targetPoints?: number, stopLossPoints?: number) =>
-    send('buy', '/order/buy-locked', { contract: shown.contract, token: shown.token, limitPrice: shown.price, targetPoints, stopLossPoints }, boughtReply);
+    send('buy', '/order/buy-locked', { contract: shown.contract, token: shown.token, limitPrice: shown.price, targetPoints, stopLossPoints }, boughtReply(shown.token));
 
   const squareOffAt = (trade: Trade, shownPrice: number) =>
     send(`sell:${trade.broker}:${trade.token}`, '/order/squareoff-locked', { token: String(trade.token), broker: trade.broker, price: shownPrice, qty: trade.quantity }, (reply) => {
       for (const r of reply?.results ?? []) {
         if (!r.ok) setError(describeError(r.error ?? 'Square off failed'));
         else if (r.closed) addNotice('info', `${r.tsym} was already closed - nothing to sell.`);
-        else addNotice(r.error ? 'warning' : 'info', `Limit sell of ${r.quantity} ${r.tsym} at ${rupees(r.limitPrice)} placed. The position stays open until it fills.${r.error ? ` ${r.error}` : ''}`);
+        else {
+          showAsPending('Sell', String(trade.token), r);
+          if (r.error) addNotice('warning', `${r.tsym}: ${r.error}`);
+        }
       }
     });
 
   const cancelOrder = async (order: PendingOrder) => {
-    await send(`cancel:${order.broker}:${order.orderId}`, '/order/cancel', { broker: order.broker, orderId: order.orderId }, (reply) => {
+    const key = orderKey(order.broker, order.orderId);
+    const already = cancelledHere.current.has(key);
+    cancelledHere.current.add(key); // before the request: the stream can report the cancel ahead of the reply
+    const accepted = await send(`cancel:${key}`, '/order/cancel', { broker: order.broker, orderId: order.orderId }, (reply) => {
       if (reply?.status === 'cancelled') setPending((prev) => prev.filter((o) => o.orderId !== order.orderId || o.broker !== order.broker));
       else if (reply?.status === 'filled') addNotice('warning', `${order.tsym}: ${reply.filledQuantity} had already filled before the cancel.`);
       else addNotice('warning', `${order.tsym}: cancel sent, waiting for the broker to confirm.`);
     });
+    if (!accepted && !already) cancelledHere.current.delete(key);
   };
 
   const dismissNotice = useCallback((id: string) => setNotices((prev) => prev.filter((n) => n.id !== id)), []);
 
   if (!active) return undefined;
-  return { flash, searchQuote, setSearchContract, positionPrice, pending, notices, dismissNotice, buyFlash, buyContract, squareOffAt, cancelOrder };
+  const sentRows = justSent
+    .filter((s) => now - s.sentAt < JUST_SENT_MS && !pending.some((p) => s.keys.includes(orderKey(p.broker, p.orderId))))
+    .map((s) => s.order);
+  return { flash, searchQuote, setSearchContract, positionPrice, pending: [...pending, ...sentRows], notices, dismissNotice, buyFlash, buyContract, squareOffAt, cancelOrder };
 }

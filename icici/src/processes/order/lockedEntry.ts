@@ -157,7 +157,7 @@ async function placeLockedOrders(a: PlaceArgs): Promise<{ orderIds: string[]; pl
                     await TRACKERS[broker].poll().catch(() => undefined);
                     await protectLot(userId, Object.assign(new Trade(), { action: 'Buy', brokerOrderId: orderId, broker, tsym: c.tsym, quantity: (ce as OrderAlreadyFilledError).filledQuantity, price: 0 }), { ...row, day: '', createdAt: new Date() });
                 }
-                throw Object.assign(new Error(`The order was placed but its target / stop-loss could not be recorded, and it ${filled ? 'had already filled' : 'could not be cancelled'}: check Pending orders and your positions. ${e?.message ?? e}`), { orderMayBeLive: true });
+                throw Object.assign(new Error(`The order was placed but its target / stop-loss could not be recorded, and it ${filled ? 'had already filled' : 'could not be cancelled'}: check your Active Positions and your broker. ${e?.message ?? e}`), { orderMayBeLive: true });
             }
             if (placed === 0) throw new Error(`The order was cancelled because its target / stop-loss could not be recorded: ${e?.message ?? e}`);
             return { orderIds, placedQuantity: placed, error: `only ${placed} was placed: ${e?.message ?? e}` };

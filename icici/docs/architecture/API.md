@@ -102,6 +102,8 @@ Buy (`order/lockedEntry.ts`): a resting LIMIT buy at `limitPrice` rounded down t
 
 Square-off (`order/lockedSquareOff.ts`): a resting LIMIT sell at `price` rounded up to the tick. A Kite GTT is deleted (and confirmed gone) first and the in-app monitor holds the target / stop meanwhile; a stop, target, expiry or max-loss exit cancels the resting sell before selling, as always. A second call re-prices (cancel with fill re-check, then place). If the sell ends without closing the position, the Kite GTT is put back. Refused for an ANT bracket position and for prism. The admin mirror leg follows the user's fill at market.
 
+Trading page (2026-11-27): a pending order is listed under Active Positions with a "Pending" tag and Cancel (no re-price). The page never sells at market: "Square off" sends the live price (not shown) to `squareoff-locked` and is disabled when there is no usable price, the order mode is not `locked`, or the position is an ANT bracket. Only problems are announced; a fill shows in the positions.
+
 Durable state: Mongo `entryExits` (buys) and `userExitSells` (sells), beside the brokers' pending-order collections.
 
 ### POST /order/lock-profits

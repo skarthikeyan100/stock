@@ -45,7 +45,8 @@ interface TradingState {
   placeOrder: (right: string) => Promise<void>;
   // Resolve true only when the server accepted the request, so callers clear their inputs/selection on success only.
   placeContractOrder: (contract: string, targetPoints?: number, stopLossPoints?: number) => Promise<boolean>;
-  squareOff: (token: string, qty: number, broker?: string) => Promise<boolean>;
+  // The demo's simulated square-off. Absent on the live page, which sells only with a limit order (locked.squareOffAt).
+  squareOff?: (token: string, qty: number, broker?: string) => Promise<boolean>;
   setTargetStopLoss: (token: string, targetPoints: number, stopLossPoints: number, broker?: string) => Promise<boolean>;
   clearError: () => void;
   // The index the page trades (ticker, Flash Trade, Search & Buy). Absent in the demo, which is NIFTY only.
@@ -217,23 +218,6 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const squareOff = useCallback(async (token: string, qty: number, broker?: string): Promise<boolean> => {
-    setOrderError(null);
-    try {
-      const response = await apiPost(`/order/squareoff?token=${encodeURIComponent(token)}&qty=${qty}${broker ? `&broker=${encodeURIComponent(broker)}` : ''}`);
-      if (!response.ok) {
-        // The server answers with plain text on some failures: read it as text, not JSON.
-        setOrderError(describeOrderError({ error: await readError(response) }));
-        return false;
-      }
-      return true;
-    } catch (err) {
-      console.error('[SquareOff] Square off failed:', err);
-      setOrderError('Network error');
-      return false;
-    }
-  }, []);
-
   const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number, broker?: string): Promise<boolean> => {
     try {
       const response = await apiPost('/order/settarget', { token, targetPoints, stopLossPoints, ...(broker ? { broker } : {}) });
@@ -252,7 +236,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setOrderError(null), []);
 
   return (
-    <TradingContext.Provider value={{ index, setIndex, orderMode, locked, trades: shownTrades, closedTrades, openPnL, totalPnL, usedAmount, placingOrder, isOrderDisabled, tradingBlocked, blockReason, orderError, placeOrder, placeContractOrder, squareOff, setTargetStopLoss, clearError }}>
+    <TradingContext.Provider value={{ index, setIndex, orderMode, locked, trades: shownTrades, closedTrades, openPnL, totalPnL, usedAmount, placingOrder, isOrderDisabled, tradingBlocked, blockReason, orderError, placeOrder, placeContractOrder, setTargetStopLoss, clearError }}>
       {children}
     </TradingContext.Provider>
   );

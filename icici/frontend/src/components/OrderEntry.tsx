@@ -210,7 +210,7 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
     await placeOrder(right);
   };
 
-  // With a price on the button, the click buys exactly that contract at exactly that price.
+  // In locked mode the click buys exactly the contract priced for this button, at that price (shown on hover only).
   const flashButton = (right: 'call' | 'put') => {
     const label = right === 'call' ? 'Up' : 'Down';
     const shown = locked ? locked.flash[right] : null;
@@ -222,12 +222,7 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
         style={locked ? { minWidth: 150 } : undefined}
         onClick={() => { if (!locked) void handleTrendBuy(right); else if (shown) void locked.buyFlash(right, shown); }}
       >
-        {placingOrder ? <Spinner animation="border" size="sm" /> : !locked ? label : (
-          <>
-            <span className="fw-bold">{label}{shown ? ` @ ₹${shown.price.toFixed(2)}` : ''}</span>
-            <span className="d-block" style={{ fontSize: '0.7rem' }}>{shown ? `${index} ${shown.strike} ${right === 'call' ? 'CE' : 'PE'}` : 'waiting for price…'}</span>
-          </>
-        )}
+        {placingOrder ? <Spinner animation="border" size="sm" /> : <span className="fw-bold">{label}</span>}
       </Button>
     );
   };
@@ -258,7 +253,6 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
             </Button>
           )}
         </div>
-        {!demo && locked && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>A click places a limit buy at the price on the button. If the market has moved, it waits under Pending orders.</div>}
         {!demo && orderMode === 'market' && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>Orders are placed at the market price.</div>}
         {!demo && orderMode === 'checking' && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>Connecting to the order service…</div>}
       </fieldset>

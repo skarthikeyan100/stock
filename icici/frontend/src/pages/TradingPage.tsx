@@ -9,11 +9,12 @@ import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
 import NotificationBell from '../components/NotificationBell';
 import ThemeToggle from '../components/ThemeToggle';
-import PendingOrders from '../components/PendingOrders';
+import OrderNotices from '../components/OrderNotices';
+import PendingBuyCard from '../components/PendingBuyCard';
 import { useMarketHours } from '../utils/marketHours';
 
 export default function TradingPage() {
-  const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason, index, setIndex, orderMode } = useTrading();
+  const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason, index, setIndex, orderMode, locked } = useTrading();
   const marketOpen = useMarketHours();
   const { user, logout, isAdmin } = useAuth();
   const handleLogout = async () => {
@@ -26,6 +27,10 @@ export default function TradingPage() {
   const [activeTab, setActiveTab] = useState('active');
   // Search & Buy is an Advanced feature (the server refuses a Beginner's contract order too); admins see everything.
   const canSearch = isAdmin || user?.proficiencyLevel === 'advanced';
+  // Buys still waiting to fill are listed with the active positions (a pending sell is shown on its position's card).
+  const pendingBuys = locked ? locked.pending.filter((o) => o.action === 'Buy') : [];
+  const activeCount = trades.length + pendingBuys.length;
+  const severalBrokers = new Set([...trades.map((t) => t.broker), ...pendingBuys.map((o) => o.broker)].filter(Boolean)).size > 1;
 
   const totalColor = totalPnL >= 0 ? 'success' : 'danger';
   const openColor = openPnL >= 0 ? 'success' : 'danger';
@@ -114,8 +119,7 @@ export default function TradingPage() {
           </>
         )}
 
-        {/* Results and resting orders: shown even when trading is blocked, so an order can still be cancelled */}
-        <PendingOrders />
+        <OrderNotices />
 
         {/* Positions Tabs */}
         <div className="mt-4">
@@ -129,15 +133,17 @@ export default function TradingPage() {
               title={
                 <span>
                   Active Positions{' '}
-                  {trades.length > 0 && <Badge bg="primary">{trades.length}</Badge>}
+                  {activeCount > 0 && <Badge bg="primary">{activeCount}</Badge>}
                 </span>
               }
             >
-              {trades.length > 0 ? (
-                trades.map((trade) => (
-                  <PositionCard key={`${trade.token}|${(trade as any).broker ?? ''}|${trade.user ?? ''}`} trade={trade} /> /* a position is token + broker (+ user): an index key moved unsent target/stop text to another row */
-                ))
-              ) : (
+              {pendingBuys.map((o) => (
+                <PendingBuyCard key={`${o.broker}:${o.orderId}`} order={o} showBroker={severalBrokers} />
+              ))}
+              {trades.map((trade) => (
+                <PositionCard key={`${trade.token}|${(trade as any).broker ?? ''}|${trade.user ?? ''}`} trade={trade} /> /* a position is token + broker (+ user): an index key moved unsent target/stop text to another row */
+              ))}
+              {activeCount === 0 && (
                 <div className="text-center text-muted py-4">
                   <p className="mb-1">No active positions</p>
                   <small>Place an order using Flash Trade or Search & Buy</small>

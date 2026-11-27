@@ -155,7 +155,7 @@ function sendOrderError(res: express.Response, e: any): void {
     const raw = String(e?.message ?? e);
     const mayBeLive = raw.includes(ORDER_MAY_BE_LIVE_TAG);
     const message = raw.split(NOT_PLACED_TAG).join('').split(ORDER_MAY_BE_LIVE_TAG).join('').trim();
-    const error = mayBeLive ? `The order may be live at the broker - check Pending orders and your broker before trying again. ${message}` : message;
+    const error = mayBeLive ? `The order may be live at the broker - check your Active Positions and your broker before trying again. ${message}` : message;
     res.status(raw.includes(NOT_PLACED_TAG) ? 409 : 500).json({ error });
 }
 

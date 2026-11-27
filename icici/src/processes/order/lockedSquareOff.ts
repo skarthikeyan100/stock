@@ -51,11 +51,11 @@ function sellExecutor(broker: LockedBroker, row: Trade): BrokerExecutor {
 
 async function sellRowAtPrice(userId: string, row: Trade, price: number, requested: number | undefined): Promise<LockedSellResult> {
     const brokerName = row.broker ?? 'kite';
-    if (!isLockedBroker(brokerName)) throw refuse(`A square-off at a locked price is not supported on ${brokerName} - use "Sell at market"`);
+    if (!isLockedBroker(brokerName)) throw refuse(`A square-off at a locked price is not supported on ${brokerName}`);
     const broker = brokerName;
     const tsym = row.tsym;
-    if (broker === 'ant' && row.antOrderNo) throw refuse(`${tsym} is an ANT bracket position: its exit lives at the broker, so it cannot be sold at a chosen price - use "Sell at market"`);
-    if (!row.token) throw refuse(`${tsym} has no instrument token - use "Sell at market"`);
+    if (broker === 'ant' && row.antOrderNo) throw refuse(`${tsym} is an ANT bracket position: its exit lives at the broker, so it cannot be sold at a chosen price: it exits through its target / stop at the broker`);
+    if (!row.token) throw refuse(`${tsym} has no instrument token, so it cannot be squared off here`);
     const key = keyOf(broker, userId, tsym);
     if (bookkeeping.pendingSquareOffs.has(key) || (broker === 'kite' && isReprotecting(userId, tsym))) throw refuse(`A sell or a target / stop change of ${tsym} is already in progress - try again in a few seconds`);
     bookkeeping.pendingSquareOffs.add(key);
