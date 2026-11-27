@@ -254,3 +254,8 @@ Done: `settings.target` / `settings.stopLoss` with per-strategy overrides, used 
 168. [OPEN, SEV: medium, code-read, pre-existing, not changed] `attachProtection` (contractor resting entry and its admin mirror) sets `gttTriggerId` for the whole merged quantity: on a contract already held with a GTT the earlier trigger stays live and untracked, and both together exceed the position (it can sell short). The clicked-price buys do not use it.
 169. [OPEN, SEV: medium, code-read, pre-existing, not changed] `POST /order/buy` accepts `strikePrice` from a Beginner (`gateBuy` refuses only `contract`), so a hand-made request picks any strike. The new `/order/buy-locked` accepts a Beginner only for the strike the server put on their button.
 
+
+## `status all` empty message (2026-11-27)
+
+170. [FIXED 2026-11-27, script only, live at once] `scripts/strategy-status.sh all` printed "no strategy enabled and no trades this session" with two blocks enabled (seen live about 09:13): `all` mode added no zero rows, so with no trades it reached the shared empty message. Zero rows for enabled, not paper-only strategies are now added in both modes. When no row remains the message states which case it is (none enabled, only paper enabled, config.yml unreadable) and does not claim that disabled strategies had no trades in plain `status`.
+171. [OPEN, SEV: low, pre-existing, not changed] When config.yml cannot be read, plain `status` filters nothing: real users (emails) and disabled strategies appear in BY STRATEGY, BY BROKER and the position table (a warning line is printed above; seen with a stand-in server and an unreadable `CONFIG_PATH`).

@@ -13,7 +13,8 @@
 # "target <price> / stop <price> protected via <gtt|..>" shows "<price> (<gtt|..>)", else the position's target "<price> (tick)", else "-".
 # By default ONLY trades OPENED today (IST day of the trade's entry time) count, realized and unrealized: a trade bought on an earlier day and
 # sold today, or still open from an earlier day, is left out (?opened=today on /strategyPnl; a trade with no entry time counts as today).
-# With `all` it also counts trades opened on an earlier day but closed today and positions still open from earlier days (?opened=all).
+# With `all` it also counts trades opened on an earlier day but closed today and positions still open from earlier days (?opened=all), and lists
+# every disabled strategy that has trades beside the enabled ones (which keep their zero rows).
 # `users` switches to the REAL USERS who trade from the frontend (Trade.user is an email; strategy pseudo-users are not): BY USER, BY BROKER,
 # OPEN POSITIONS by user (target/stop as stored on the position, "-" if none) and the day's closed TRADES one row each (?match=@ on /strategyPnl,
 # ?closed=1 for the closed rows). The admin email also carries the mirrored shares of other users buys (settings.mirrorPercentage); a trade row
@@ -303,11 +304,19 @@ if(allMode){
   for(let i=byStrategy.length-1;i>=0;i--)if(isUserName(byStrategy[i].strategy))byStrategy.splice(i,1);
 }else if(enabledNames){
   for(let i=byStrategy.length-1;i>=0;i--)if(!enabledNames.has(byStrategy[i].strategy))byStrategy.splice(i,1);
-  const have=new Set(byStrategy.map(r=>r.strategy));
-  for(const name of zeroNames)if(!have.has(name))byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0});
 }
+// Both modes: a zero row for each enabled, not paper-only strategy with no row yet (zeroNames is empty when config.yml could not be read).
+const have=new Set(byStrategy.map(r=>r.strategy));
+for(const name of zeroNames)if(!have.has(name))byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0});
 byStrategy.sort((a,b)=>a.strategy.localeCompare(b.strategy));
-if(!byStrategy.length){console.log("no strategy enabled and no trades this session");process.exit(0)}
+// No row at all: say only what is known. Plain status hides disabled strategies, so it must not claim there were no trades at all.
+if(!byStrategy.length){
+  const none=allMode?"no real strategy trade (closed or still open)":"no real trade opened today"+(enabledNames?" by an enabled strategy":"");
+  if(!enabledNames)console.log(none+"; which strategies are enabled is unknown");
+  else if(enabledNames.size)console.log("only paper strategies are enabled (see `status paper`); "+none);
+  else console.log("no strategy enabled; "+none+(allMode?"":" (`status all` also lists disabled strategies)"));
+  process.exit(0);
+}
 console.log(process.env.OPENED==="all"?"(all trades: also those opened on an earlier day)":"(trades opened today only; `all` adds earlier-day trades closed or still open today)");
 table("BY STRATEGY",byStrategy);
 const esc=n=>n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
