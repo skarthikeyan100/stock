@@ -62,6 +62,7 @@ Startup restores positions from Mongo alone. With valid logins: `npm run sync`, 
 1. Before open: session check; every broker of an enabled strategy must be logged in.
 2. After start: log shows `Startup restore complete (from Mongo, no broker read)` and state loaded for each enabled strategy, else `npm run sync -- --strategies`.
 3. **Alerts monitor:** armed until 15:30, re-armed at once on expiry and checked before replying to anything else. Exactly one: check `ps -eo pid,lstart,args | grep "[m]onitor-strategies-alerts.sh"`, kill older ones (`pkill -P <bash pid>`, then `kill`; never your own shell). Reply only to `!!!` lines, ALERTs, limit trips, missed slots.
+   - Fills and other normal events: no report, no follow-up check announced (user's rule: save tokens). Analyse only a loss, an error or unwanted calls; reply in one or two lines.
 4. **Status replies:** paste verbatim in a code block. `status`: `BY STRATEGY`, `BY BROKER`, `UNREALIZED BY BROKER AND STRATEGY`, plus one line per open position the script omits. `status users`: `BY USER`, `BY BROKER`, `OPEN POSITIONS`, `TRADES`; note mirrored admin shares (footer) and whether `?closed=1` needs a web-server restart.
 5. After every restart and heavy fill period, compare broker positions with strategy state.
 
