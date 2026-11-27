@@ -192,6 +192,8 @@ Every trading day after 15:30, unasked: sync first (the 15:45 run or your own, a
 5. **Configuration at close:** enabled strategies, brokers, amounts, changes not yet live.
 6. **Carry-over** by priority; unresolved orders and unprotected positions first, with who acts.
 
+After the report, and on every "run eod", clean up `ToDo.md` and `open-review-items.md` yourself (user's rule): remove done entries, merge appended ones, keep only pending work; commit and push only these two.
+
 Quote figures as reported; mark the unconfirmed. Record even a no-trade day. Tell the user the file paths, realized total and first carry-over; commit only if asked.
 
 ## Updating this file
