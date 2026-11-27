@@ -73,7 +73,8 @@ export async function loginWithBrowserOtp(page: Page, creds: Credentials, waitMi
   const password = page.locator('#password_input');
   await mobile.or(password).first().waitFor({ state: 'visible', timeout: 20_000 });
   if (await mobile.isVisible()) {
-    await mobile.fill(creds.mobile);
+    // The page may advance to the password step while this fills (the field is then detached); password.fill below decides.
+    await mobile.fill(creds.mobile, { timeout: 5_000 }).catch(() => undefined);
     await page.locator('#mobileNo_submit_btn').click({ timeout: 5_000 }).catch(() => undefined); // the page may advance by itself
   }
   await password.fill(creds.password, { timeout: 20_000 });

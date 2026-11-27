@@ -5,10 +5,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "tsc-watch --noEmit --onSuccess \"sh -c 'tsx src/index.ts 2>&1 | tee -a logs/dev.log'\"",
+    "dev": "tsc-watch --noEmit --onSuccess \"sh -c 'tsx src/index.ts 2>&1 | tee -a logs/gopocket.log'\"",
     "login": "tsx scripts/login.ts",
     "probe": "tsx scripts/probe.ts",
-    "probe-buy": "tsx scripts/probe-buy.ts",
     "test": "vitest run",
     "start": "tsx scripts/start.ts",
     "record-login": "tsx scripts/record-login.ts"

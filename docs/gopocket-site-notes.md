@@ -37,10 +37,10 @@ Site: https://web.gopocket.in (login page, then /dashboard). Account is a normal
 
 ## Update 2026-11-17 (night): any underlying, one lot
 - Search `<UNDERLYING> <strike> <CE|PE>` works for stocks and indices. Rows read like `PAYTM 23rd NOV 2000 CE NFO`; **stock options are also listed on BFO** (`PAYTM 26th NOV 2000 CE BFO`), SENSEX only on BFO, BANKNIFTY only on NFO. The bot takes NFO rows when any exist, else BFO, then the nearest expiry (or the stated one).
-- One lot = the `step` of the `#qty` field (NIFTY 65, PAYTM 725, HAL 150); the bot orders exactly that quantity. These matched the lot sizes written in the channel posts.
+- One lot = the `step` of the `#qty` field (NIFTY 65, PAYTM 725, HAL 150); gopocket orders whole multiples of it, up to `maxInvestment`. These matched the lot sizes written in the channel posts.
 - The channel posts a line `DATE: dd-mm-yyyy` that is the date of the call, not an expiry; the Claude prompt says so.
 - The headless dry run (form filled, read back, Cancel) was verified for NIFTY, PAYTM and HAL. A real accepted order is still not recorded.
-- A second Chromium on the same `browser-profile/` while the bot runs shows the site as logged out: stop the bot before running `npm run probe`/`probe-buy`.
+- A second Chromium on the same `browser-profile/` while gopocket runs shows the site as logged out: stop the bot before running `npm run probe`.
 - Expiry: posts name only a month for stock options ("NOV: 2000.00 CE"). Claude returns `expiryMonth` (JAN..DEC); the bot trades the nearest listed expiry inside that month and refuses if that month is not listed (it never falls back to another month). With no month stated it takes the nearest expiry, as for NIFTY.
 
 ## Update 2026-11-18 (live): Cover/bracket not allowed, Regular buy + GTT exit

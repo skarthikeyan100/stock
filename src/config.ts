@@ -35,13 +35,12 @@ export function parseConfig(input: unknown): Config {
   return {
     ...(target ? { target } : {}),
     ...(stop ? { stop } : {}),
+    maxInvestment: withDefault(raw, 'maxInvestment', 50000),
     strikeBandPercent: withDefault(raw, 'strikeBandPercent', 10),
     priceMin: withDefault(raw, 'priceMin', 1),
     priceMax: withDefault(raw, 'priceMax', 1500),
     dedupeWindowSeconds: withDefault(raw, 'dedupeWindowSeconds', 300),
     port: withDefault(raw, 'port', 3101),
-    headless: raw.headless === undefined ? true : raw.headless === true,
-    dryRun: raw.dryRun === undefined ? true : raw.dryRun !== false,
     profileDir: typeof raw.profileDir === 'string' ? raw.profileDir : 'browser-profile',
     ...(typeof raw.claudeModel === 'string' ? { claudeModel: raw.claudeModel } : {}),
   };

@@ -20,17 +20,17 @@ describe('validateSignal', () => {
   it('rejects a target at or below the entry', () => expect(reason({ target: 50 })).toMatch(/target/));
   it('rejects a past expiry', () => expect(reason({ expiry: '2026-11-10' })).toMatch(/expiry/));
   it('accepts today as expiry', () => expect(reason({ expiry: '2026-11-17' })).toBe('ok'));
-  const stock = (s: Partial<Signal>): string => {
-    const r = validateSignal({ ...good, underlying: 'PAYTM', strike: 2000, price: 20.5, stop: 17, target: 22.5, ...s }, { today: '2026-11-17' }, cfg);
+  const other = (s: Partial<Signal>): string => {
+    const r = validateSignal({ ...good, underlying: 'BANKNIFTY', strike: 58000, price: 20.5, stop: 17, target: 22.5, ...s }, { today: '2026-11-17' }, cfg);
     return r.ok ? 'ok' : r.reason;
   };
-  it('accepts a stock option with no spot, whatever the strike or price', () => {
-    expect(stock({})).toBe('ok');
-    expect(stock({ price: 5400, stop: 5000, target: 5800 })).toBe('ok');
+  it('accepts a BANKNIFTY option with no spot, whatever the strike or price', () => {
+    expect(other({})).toBe('ok');
+    expect(other({ price: 5400, stop: 5000, target: 5800 })).toBe('ok');
   });
-  it('still checks stop, target and expiry for a stock option', () => {
-    expect(stock({ stop: 25 })).toMatch(/stop/);
-    expect(stock({ target: 20 })).toMatch(/target/);
-    expect(stock({ expiry: '2026-11-10' })).toMatch(/expiry/);
+  it('still checks stop, target and expiry for a BANKNIFTY option', () => {
+    expect(other({ stop: 25 })).toMatch(/stop/);
+    expect(other({ target: 20 })).toMatch(/target/);
+    expect(other({ expiry: '2026-11-10' })).toMatch(/expiry/);
   });
 });

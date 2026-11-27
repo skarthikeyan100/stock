@@ -3,9 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
-import readline from 'node:readline/promises';
-import { loginWithOtp, readCredentials } from '../src/order/login.js';
-import { dismissNotice, isLoggedIn, openContext } from '../src/order/session.js';
 import { findProcess, isListening } from '../src/startup.js';
 
 // Starts GoPocket and the WhatsApp router, each only if it is not already running. Both are detached, so they keep
@@ -15,10 +12,10 @@ if (fs.existsSync(path.join(ROOT, '.env'))) process.loadEnvFile(path.join(ROOT, 
 const ROUTER_DIR = path.resolve(process.env.WHATSAPP_DIR ?? path.join(ROOT, '..', 'whatsapp'));
 const cfg = loadConfig();
 
-function launch(dir: string, logName: string): void {
+// Each project's `npm run dev` tees its output into its own logs/gopocket.log or logs/whatsapp.log.
+function launch(dir: string, cmd: string[]): void {
   fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
-  const out = fs.openSync(path.join(dir, 'logs', logName), 'a');
-  spawn('npx', ['tsx', 'src/index.ts'], { cwd: dir, detached: true, stdio: ['ignore', out, out] }).unref();
+  spawn(cmd[0], cmd.slice(1), { cwd: dir, detached: true, stdio: 'ignore' }).unref();
 }
 
 async function waitFor(check: () => Promise<boolean> | boolean, seconds: number): Promise<boolean> {
@@ -29,46 +26,14 @@ async function waitFor(check: () => Promise<boolean> | boolean, seconds: number)
   return false;
 }
 
-// 1. GoPocket
-if ((await isListening(cfg.port)) || findProcess(ROOT, 'src/index.ts')) {
+// 1. GoPocket. If its session is logged out it opens a browser window, fills mobile + password from .env and waits for
+// the OTP typed in that window (up to 10 minutes); it listens on its port only after that, and trades from that window.
+if ((await isListening(cfg.port)) || findProcess(ROOT, 'src/index.ts') || findProcess(ROOT, 'node_modules/.bin/tsc-watch')) {
   console.log(`GoPocket: already running (port ${cfg.port}), not started again`);
 } else {
-  const context = await openContext(cfg, { headless: true });
-  const page = await context.newPage();
-  let loggedIn = await isLoggedIn(page);
-  if (!loggedIn) {
-    let creds: ReturnType<typeof readCredentials> | undefined;
-    try {
-      creds = readCredentials(process.env);
-    } catch (error) {
-      console.error(`GoPocket: not logged in and cannot log in by itself: ${(error as Error).message}. Or run \`npm run login\` and start again.`);
-    }
-    if (creds) {
-      if (!process.stdin.isTTY) {
-        console.error('GoPocket: not logged in, and the OTP prompt needs an interactive terminal.');
-      } else {
-        try {
-          console.log('GoPocket: session is logged out, logging in with the mobile and password from .env ...');
-          await loginWithOtp(page, creds, async () => {
-            const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-            const otp = await rl.question('Enter the 6-digit OTP sent to your phone: ');
-            rl.close();
-            return otp;
-          });
-          loggedIn = await isLoggedIn(page);
-        } catch (error) {
-          console.error(`GoPocket: login failed: ${(error as Error).message}`);
-        }
-      }
-    }
-  }
-  if (loggedIn) await dismissNotice(page);
-  await context.close(); // the browser profile can be used by one browser at a time
-  if (!loggedIn) process.exit(1);
-  launch(ROOT, 'bot.out.log');
+  launch(ROOT, ['npm', 'run', 'dev']); // always under tsc-watch: restarts after every successful compile
   const up = await waitFor(() => isListening(cfg.port), 40);
-  console.log(up ? `GoPocket: started (dryRun=${cfg.dryRun}), listening on port ${cfg.port}; log: logs/bot.out.log` : 'GoPocket: started but not listening after 40 s, check logs/bot.out.log');
-  if (!up) process.exit(1);
+  console.log(up ? `GoPocket: started, listening on port ${cfg.port}; log: logs/gopocket.log` : 'GoPocket: started, not listening yet. If a browser window opened, enter the OTP there; log: logs/gopocket.log');
 }
 
 // 2. WhatsApp router
@@ -76,8 +41,8 @@ const running = findProcess(ROUTER_DIR, 'src/index.ts');
 if (running) {
   console.log(`WhatsApp router: already running (pid ${running}), not started again`);
 } else {
-  launch(ROUTER_DIR, 'router.out.log');
+  launch(ROUTER_DIR, ['npm', 'run', 'dev']);
   const up = await waitFor(() => findProcess(ROUTER_DIR, 'src/index.ts') !== null, 15);
-  console.log(up ? `WhatsApp router: started; log: ${path.join(ROUTER_DIR, 'logs', 'router.out.log')} (a QR code appears there only if WhatsApp must be linked again)` : 'WhatsApp router: did not start, check its log');
+  console.log(up ? `WhatsApp router: started; log: ${path.join(ROUTER_DIR, 'logs', 'whatsapp.log')} (a QR code appears there only if WhatsApp must be linked again)` : 'WhatsApp router: did not start, check its log');
   if (!up) process.exit(1);
 }

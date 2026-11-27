@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { Page } from 'playwright';
-import { roundTick } from '../bracket.js';
+import { orderQty, roundTick } from '../bracket.js';
 import { chooseExpiry } from '../expiry.js';
 import type { Config } from '../types.js';
 import { BASE_URL, dismissNotice } from './session.js';
@@ -32,7 +32,8 @@ export interface BuyRequest {
   targetOffset: number;
 }
 
-export type OrderOutcome = { status: 'placed' | 'rejected' | 'unknown'; orderNo?: string; symbol?: string; reason?: string };
+/** 'skipped': nothing was sent to the exchange. */
+export type OrderOutcome = { status: 'placed' | 'rejected' | 'unknown' | 'skipped'; orderNo?: string; symbol?: string; reason?: string };
 
 const FILL_TIMEOUT = 5_000;
 
@@ -116,7 +117,7 @@ async function readRegularForm(page: Page) {
 /**
  * Cover/bracket orders are not allowed, so: (1) a plain Regular Limit buy (Positional, so a GTT can exit it later),
  * (2) once it is filled, a sell OCO GTT (stoploss leg + target leg). The offsets in the request are differences from the
- * entry price. In dry run the buy form is filled, read back and cancelled; Buy is never clicked.
+ * entry price.
  */
 export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, today: string): Promise<OrderOutcome> {
   try {
@@ -126,27 +127,28 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
     await page.locator('#ow_Regular').click();
     await page.locator('#ow_Limit').click();
     await page.locator('#NRML').check({ timeout: FILL_TIMEOUT });
-    // One lot = the site's own lot quantity (the qty field's step); the lot size written in the message is ignored.
+    // The lot size is the site's own (the qty field's step); the one written in the message is ignored.
     const lot = Number(await page.locator('#qty').getAttribute('step', { timeout: FILL_TIMEOUT }));
     if (!(lot > 0)) {
       await saveEvidence(page, 'no-lot');
       await cancelForm(page);
       return { status: 'unknown', reason: 'could not read the lot size from the form' };
     }
-    await setNumber(page, '#qty', lot);
+    const qty = orderQty(cfg.maxInvestment, req.price, lot);
+    if (qty === 0) {
+      await cancelForm(page);
+      return { status: 'skipped', reason: `one lot (${lot} at ${req.price}) is over maxInvestment ${cfg.maxInvestment}` };
+    }
+    await setNumber(page, '#qty', qty);
     await setNumber(page, '#price', req.price);
     await page.locator('#price').blur();
 
     const f = await readRegularForm(page);
     console.log(`[buy-form] ${label}`, f);
-    if (f.qty !== lot || !near(f.price, req.price) || !f.positional) {
+    if (f.qty !== qty || !near(f.price, req.price) || !f.positional) {
       await saveEvidence(page, 'form-mismatch');
       await cancelForm(page);
       return { status: 'unknown', reason: `form mismatch: ${JSON.stringify(f)}` };
-    }
-    if (cfg.dryRun) {
-      await cancelForm(page);
-      return { status: 'unknown', reason: 'dry run' };
     }
     await page.locator('#ow_place_order_btn').click({ timeout: FILL_TIMEOUT });
     const outcome = await readResult(page, req);
@@ -167,7 +169,7 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
       return { ...outcome, status: 'unknown', reason: `buy not filled (status "${status}"): no stop/target placed (order ${outcome.orderNo})` };
     }
     try {
-      await placeExitGtt(page, req, lot, today);
+      await placeExitGtt(page, req, qty, today);
     } catch (err) {
       await saveEvidence(page, 'gtt-error');
       return { ...outcome, status: 'unknown', reason: `buy filled but the stop/target GTT FAILED (${(err as Error).message}): position is unprotected, check the website` };
@@ -260,7 +262,7 @@ function executedRow(page: Page, req: BuyRequest) {
 }
 
 /** Sell OCO GTT: stoploss leg (limit a little under the trigger so it fills) and target leg. */
-export async function placeExitGtt(page: Page, req: BuyRequest, lot: number, today: string): Promise<void> {
+export async function placeExitGtt(page: Page, req: BuyRequest, qty: number, today: string): Promise<void> {
   const stop = roundTick(req.price - req.stopOffset);
   const target = roundTick(req.price + req.targetOffset);
   const stopLimit = roundTick(stop * 0.95);
@@ -269,10 +271,10 @@ export async function placeExitGtt(page: Page, req: BuyRequest, lot: number, tod
   await page.locator('#ow_GTT:visible').click({ timeout: FILL_TIMEOUT });
   await page.locator('#ow_OCO:visible').click({ timeout: FILL_TIMEOUT });
   await setNumber(page, '#trigger_price:visible', stop);
-  await setNumber(page, '#sl_bid_qty:visible', lot);
+  await setNumber(page, '#sl_bid_qty:visible', qty);
   await setNumber(page, '#scrip_price:visible', stopLimit);
   await setNumber(page, '#target_trig_price:visible', target);
-  await setNumber(page, '#tar_bid_qty:visible', lot);
+  await setNumber(page, '#tar_bid_qty:visible', qty);
   await setNumber(page, '#target_price_ocd:visible', target);
   await page.locator('#target_price_ocd:visible').blur();
   console.log('[gtt-form]', {

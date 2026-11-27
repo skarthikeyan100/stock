@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveBracket, roundTick } from '../src/bracket.js';
+import { orderQty, resolveBracket, roundTick } from '../src/bracket.js';
 import { parseConfig } from '../src/config.js';
 import type { Signal } from '../src/types.js';
 
@@ -35,4 +35,13 @@ describe('resolveBracket', () => {
   it('throws when target is missing and not configured', () => {
     expect(() => resolveBracket(sig({ stop: 41 }), cfg())).toThrow(/target/);
   });
+});
+
+describe('orderQty', () => {
+  it.each([
+    [54, 65, 910], // 14 lots = 49140; 15 lots would be 52650
+    [250, 20, 200], // 10 lots = exactly 50000
+    [769.2, 65, 65], // one lot = 49998
+  ])('at %d with lot %d buys %d', (price, lot, qty) => expect(orderQty(50000, price, lot)).toBe(qty));
+  it('is 0 when one lot costs more than the limit', () => expect(orderQty(50000, 800, 65)).toBe(0));
 });

@@ -6,7 +6,7 @@ import { logError, logInfo } from './logger.js';
 import { type BuyRequest, cancelForm, ensurePendingPage, gttListed, isOrderPending, openBuyForm, pendingEmpty, placeBracketBuy, placeExitGtt, readSpot } from './order/gopocket.js';
 import fs from 'node:fs';
 import { loginWithBrowserOtp, readCredentials } from './order/login.js';
-import { dismissNotice, isLoggedIn, openContext } from './order/session.js';
+import { BASE_URL, dismissNotice, isLoggedIn, openContext } from './order/session.js';
 import { type Broker, handleMessage, serialize } from './pipeline.js';
 import { createMessageServer } from './server.js';
 
@@ -19,11 +19,8 @@ let context: BrowserContext | undefined;
 let page: Page | undefined;
 
 async function getPage(): Promise<Page> {
-  if (!context || !page || page.isClosed()) {
-    await context?.close().catch(() => undefined);
-    context = await openContext(cfg);
-    page = await context.newPage();
-  }
+  if (!context || !context.browser()?.isConnected()) context = await openContext(cfg);
+  if (!page || page.isClosed()) page = context.pages().find((p) => p.url().startsWith(BASE_URL)) ?? (await context.newPage());
   return page;
 }
 
@@ -42,7 +39,7 @@ const broker: Broker = {
 {
   const p = await getPage();
   if (!(await isLoggedIn(p))) {
-    logInfo('GoPocket session is logged out: logging in, enter the OTP in the browser window');
+    logInfo('GoPocket session is logged out: enter the OTP in the browser window');
     await loginWithBrowserOtp(p, readCredentials(process.env));
   }
   await dismissNotice(p);
@@ -86,17 +83,13 @@ const server = createMessageServer((messageId, text) => {
     logInfo('exit GTT submitted', { underlying: req.underlying, strike: req.strike, right: req.right });
   }).catch((error) => logError('owner request failed', { error: error instanceof Error ? error.message : String(error) })),
 );
-server.listen(cfg.port, '127.0.0.1', () => logInfo(`GoPocket listening on 127.0.0.1:${cfg.port} (dryRun=${cfg.dryRun}, headless=${cfg.headless})`));
+server.listen(cfg.port, '127.0.0.1', () => logInfo(`GoPocket listening on 127.0.0.1:${cfg.port} `));
 
-// A restart (SIGTERM/SIGINT) must really stop this process: close the listener and the browser, then exit.
+// A restart (SIGTERM/SIGINT) must really stop this process: close the listener and exit. The browser stays open.
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {
     logInfo(`${sig}: shutting down`);
     server.close();
-    context
-      ?.close()
-      .catch(() => undefined)
-      .finally(() => process.exit(0));
-    setTimeout(() => process.exit(0), 5_000).unref();
+    process.exit(0);
   });
 }

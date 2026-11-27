@@ -22,6 +22,10 @@ export const PAYTM_BOOK_UPDATE_CLAUDE = { relevant: true, action: 'exit', instru
 export const AGAIN_REPOST =
   'Again\n\nRISKY JACKPOT (INTRADAY+BTST)# BUY NIFTY (25800.00 CE) CMP 57.00 STOPLOSS 44.00 TARGET 74.00-98.00-120.00++(LOT SIZE 65)';
 
+/** Real 20-11-2026 message: the "Positional (AGAIN)" header is traded. */
+export const POSITIONAL_AGAIN =
+  'Positional ( AGAIN)\n*♨️RISKY JACKPOT*\nDATE: 20-11-2026\n 🐎  #  *BUY BRITANNIA* ( DEC: 5200.00 CE)  at above 51.80 ADD UPTO 38.00  STOPLOSS 36.00 TARGET 60.00-71.00-85.00-100.00++(LOT SIZE 125)';
+
 export const CASH_POSTS = [
   '( T+4) # BUY FEDERAL BANK (CASH) AT ABOVE 360.40 ADD UPTO 353.00 Stop 351.00 tgt 369.00-375.00-384.00++',
   '( T+4) # BUY REDINGTON (CASH) AT ABOVE 359.60 ADD UPTO 351.00 Stop 350.00 tgt 366.00-374.00-381.00++',

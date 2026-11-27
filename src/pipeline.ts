@@ -93,7 +93,7 @@ export async function handleMessage(messageId: string, text: string, deps: Pipel
   }
 
   if (outcome.status === 'placed') return done({ result: 'ordered', detail: `${outcome.symbol ?? ''} order ${outcome.orderNo ?? '?'}`.trim() });
+  if (outcome.status === 'skipped') return done({ result: 'skipped', detail: outcome.reason });
   if (outcome.status === 'rejected') return done({ result: 'failed', detail: `rejected: ${outcome.reason ?? 'no reason shown'} (order ${outcome.orderNo ?? '?'})` });
-  if (outcome.reason === 'dry run') return done({ result: 'skipped', detail: 'dry run: form filled and checked, Buy not clicked' });
   return done({ result: 'failed', detail: `unknown outcome: ${outcome.reason ?? 'not confirmed'}; check the website` });
 }

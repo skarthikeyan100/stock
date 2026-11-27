@@ -3,7 +3,7 @@ import type { Config, Signal } from './types.js';
 export type Validation = { ok: true } | { ok: false; reason: string };
 
 /**
- * NIFTY calls are checked against the live NIFTY level and the price range. Other underlyings have no spot
+ * NIFTY calls are checked against the live NIFTY level and the price range. SENSEX and BANKNIFTY have no spot
  * to compare with (owner's rule: use the message price as given), so only the structural checks apply.
  */
 export function validateSignal(s: Signal, ctx: { spot?: number; today: string }, cfg: Config): Validation {

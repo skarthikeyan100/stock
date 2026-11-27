@@ -5,11 +5,10 @@
   "target": {
     "percent": 20
   },
+  "maxInvestment": 50000,
   "strikeBandPercent": 10,
   "priceMin": 1,
   "priceMax": 1500,
   "dedupeWindowSeconds": 300,
-  "headless": true,
-  "dryRun": true,
   "claudeModel": "claude-haiku-5-5"
 }

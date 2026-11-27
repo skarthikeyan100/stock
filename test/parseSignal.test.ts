@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseSignal } from '../src/parseSignal.js';
 
-import { AGAIN_REPOST, APOLLO_UPDATE, CASH_POSTS, HAL_CALL, HAL_CALL_CLAUDE, NIFTY_CALL, NIFTY_CALL_CLAUDE, PAYTM_BOOK_UPDATE, PAYTM_BOOK_UPDATE_CLAUDE, PAYTM_CALL, PAYTM_CALL_CLAUDE } from './fixtures/channel.js';
+import { AGAIN_REPOST, POSITIONAL_AGAIN, APOLLO_UPDATE, CASH_POSTS, HAL_CALL, HAL_CALL_CLAUDE, NIFTY_CALL, NIFTY_CALL_CLAUDE, PAYTM_BOOK_UPDATE, PAYTM_BOOK_UPDATE_CLAUDE, PAYTM_CALL, PAYTM_CALL_CLAUDE } from './fixtures/channel.js';
 
 // The user's own typo-ridden sample (also a real message): "NIFRY", "STOPLLOSS", ":" for "."
 const SAMPLE = 'BUY NIFRY (25400.00 CE) CMP 54:)) STOPLLOSS 41:00 TARGET 68:00-80:00-100:00++(LOT SIZE 65)';
@@ -22,13 +22,20 @@ describe('parseSignal on real channel posts', () => {
     expect(await parseSignal(NIFTY_CALL, run)).toEqual({ signal: { action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25800, price: 79, stop: 61, target: 100 }, via: 'claude' });
     expect(calls.n).toBe(1);
   });
-  it('parses the PAYTM call (a stock option)', async () => {
-    const { run } = claudeSays(PAYTM_CALL_CLAUDE);
-    expect((await parseSignal(PAYTM_CALL, run)).signal).toEqual({ action: 'buy', underlying: 'PAYTM', right: 'CE', strike: 2000, price: 20.5, stop: 17, target: 22.5, expiryMonth: 'NOV' });
+  it.each([
+    ['PAYTM', PAYTM_CALL, PAYTM_CALL_CLAUDE],
+    ['HAL', HAL_CALL, HAL_CALL_CLAUDE],
+  ])('ignores the %s call (a stock option)', async (name, text, out) => {
+    const { run } = claudeSays(out);
+    expect(await parseSignal(text, run)).toEqual({ signal: null, reason: `ignored: ${name} is not NIFTY, SENSEX or BANKNIFTY` });
   });
-  it('parses the HAL call (a stock option)', async () => {
-    const { run } = claudeSays(HAL_CALL_CLAUDE);
-    expect((await parseSignal(HAL_CALL, run)).signal).toMatchObject({ underlying: 'HAL', strike: 5400, price: 13.5, stop: 6, target: 18, expiryMonth: 'NOV' });
+  it.each(['SENSEX', 'BANKNIFTY'])('accepts a %s call', async (instrument) => {
+    const { run } = claudeSays({ ...sampleOut, instrument });
+    expect((await parseSignal(NIFTY_CALL, run)).signal).toMatchObject({ underlying: instrument });
+  });
+  it.each(['FINNIFTY', 'MIDCPNIFTY', 'BANKEX'])('ignores another index: %s', async (instrument) => {
+    const { run } = claudeSays({ ...sampleOut, instrument });
+    expect((await parseSignal(NIFTY_CALL, run)).signal).toBeNull();
   });
   it('parses the typo-ridden sample', async () => {
     const { run } = claudeSays(sampleOut);
@@ -45,6 +52,11 @@ describe('parseSignal on real channel posts', () => {
     const r = await parseSignal(AGAIN_REPOST, run);
     expect((r as { reason: string }).reason).toMatch(/again/i);
     expect(calls.n).toBe(0);
+  });
+  it('sends a "Positional (AGAIN)" header message to Claude', async () => {
+    const { run, calls } = claudeSays(NIFTY_CALL_CLAUDE);
+    await parseSignal(POSITIONAL_AGAIN, run);
+    expect(calls.n).toBe(1);
   });
   it.each(CASH_POSTS.map((t) => [t.slice(0, 60), t]))('skips the cash post "%s" without calling Claude', async (_name, text) => {
     const { run, calls } = claudeSays(NIFTY_CALL_CLAUDE);

@@ -1,18 +1,34 @@
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type BrowserContext, chromium, type Page } from 'playwright';
+import { isListening } from '../startup.js';
 import type { Config } from '../types.js';
 
 export const BASE_URL = 'https://web.gopocket.in';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** One persistent browser profile on disk: the login token lives in its localStorage. */
-export async function openContext(cfg: Config, opts: { headless?: boolean } = {}): Promise<BrowserContext> {
-  return chromium.launchPersistentContext(path.resolve(ROOT, cfg.profileDir), {
-    headless: opts.headless ?? cfg.headless,
-    viewport: { width: 1296, height: 760 },
-  });
+const DEBUG_PORT = 9222;
+
+/**
+ * One visible Chromium with a persistent profile on disk (the login token lives in its localStorage). It is started
+ * once, detached, with a debugging port, and every gopocket run (including each tsc-watch restart) connects to that same
+ * browser instead of opening a new one. It keeps running when gopocket exits.
+ */
+export async function openContext(cfg: Config): Promise<BrowserContext> {
+  if (!(await isListening(DEBUG_PORT))) {
+    // Started through a shell that exits at once, so the browser is not a child of gopocket: tsc-watch kills gopocket's
+    // whole child tree on every restart, which would close a direct child.
+    spawn(
+      'sh',
+      ['-c', 'setsid "$0" "$@" >/dev/null 2>&1 &', chromium.executablePath(), `--remote-debugging-port=${DEBUG_PORT}`, `--user-data-dir=${path.resolve(ROOT, cfg.profileDir)}`, '--window-size=1296,760', '--no-first-run', '--no-default-browser-check', 'about:blank'],
+      { detached: true, stdio: 'ignore' },
+    ).unref();
+    for (let i = 0; i < 30 && !(await isListening(DEBUG_PORT)); i++) await new Promise((r) => setTimeout(r, 500));
+  }
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${DEBUG_PORT}`);
+  return browser.contexts()[0];
 }
 
 /** The dashboard nav ("Holdings") is visible only when logged in; the login page shows a password field. */

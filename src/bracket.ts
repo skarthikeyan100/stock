@@ -17,3 +17,8 @@ export function resolveBracket(signal: Signal, cfg: Config): { stopOffset: numbe
   const targetOffset = signal.target !== undefined ? roundTick(signal.target - signal.price) : fromRule(cfg.target, signal.price, 'target');
   return { stopOffset, targetOffset };
 }
+
+/** Units to buy: as many whole lots as fit in maxInvestment at the limit price; 0 when not even one lot fits. */
+export function orderQty(maxInvestment: number, price: number, lot: number): number {
+  return Math.floor(maxInvestment / (price * lot)) * lot;
+}

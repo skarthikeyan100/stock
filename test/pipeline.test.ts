@@ -4,7 +4,7 @@ import { parseConfig } from '../src/config.js';
 import { createDeduper } from '../src/dedupe.js';
 import type { BuyRequest, OrderOutcome } from '../src/order/gopocket.js';
 import { handleMessage, serialize, type Broker } from '../src/pipeline.js';
-import { AGAIN_REPOST, CASH_POSTS, HAL_CALL, HAL_CALL_CLAUDE, PAYTM_CALL, PAYTM_CALL_CLAUDE } from './fixtures/channel.js';
+import { AGAIN_REPOST, CASH_POSTS, PAYTM_CALL, PAYTM_CALL_CLAUDE } from './fixtures/channel.js';
 
 const SAMPLE = 'BUY NIFRY (25400.00 CE) CMP 54:)) STOPLLOSS 41:00 TARGET 68:00-80:00-100:00++(LOT SIZE 65)';
 const sampleOut = { relevant: true, instrument: 'NIFTY', action: 'buy', right: 'CE', strike: 25400, price: 54, stop: 41, targets: [68, 80, 100] };
@@ -64,30 +64,37 @@ describe('handleMessage', () => {
     expect(buys).toHaveLength(0);
   });
 
-  it('orders a stock option (the real PAYTM post) without reading the NIFTY spot', async () => {
+  it('ignores a stock option (the real PAYTM post): no spot read, no order', async () => {
     const spotCalls = { n: 0 };
-    const { deps, buys } = setup({ spotCalls, spot: new Error('must not be called'), out: PAYTM_CALL_CLAUDE });
-    expect((await handleMessage('m1', PAYTM_CALL, deps)).result).toBe('ordered');
+    const { deps, buys } = setup({ spotCalls, out: PAYTM_CALL_CLAUDE });
+    expect((await handleMessage('m1', PAYTM_CALL, deps)).result).toBe('ignored');
     expect(spotCalls.n).toBe(0);
-    expect(buys).toEqual([{ underlying: 'PAYTM', right: 'CE', strike: 2000, expiryMonth: 'NOV', price: 20.5, stopOffset: 3.5, targetOffset: 2 }]);
+    expect(buys).toHaveLength(0);
+  });
+
+  it('orders a BANKNIFTY option without reading the NIFTY spot', async () => {
+    const spotCalls = { n: 0 };
+    const { deps, buys } = setup({ spotCalls, spot: new Error('must not be called'), out: { ...sampleOut, instrument: 'BANKNIFTY', strike: 58000 } });
+    expect((await handleMessage('m1', SAMPLE, deps)).result).toBe('ordered');
+    expect(spotCalls.n).toBe(0);
+    expect(buys).toEqual([{ underlying: 'BANKNIFTY', right: 'CE', strike: 58000, price: 54, stopOffset: 13, targetOffset: 14 }]);
   });
 
   it('passes the stated expiry month to the broker and treats another month as another contract', async () => {
-    const dec = { ...PAYTM_CALL_CLAUDE, expiryMonth: 'DEC' };
-    const nov = { ...PAYTM_CALL_CLAUDE, expiryMonth: 'NOV' };
-    const a = setup({ out: nov });
-    await handleMessage('m1', PAYTM_CALL, a.deps);
-    const b = { ...a.deps, run: (async () => JSON.stringify({ structured_output: dec })) as ClaudeRunner };
-    expect((await handleMessage('m2', PAYTM_CALL, b)).result).toBe('ordered');
+    const month = (expiryMonth: string) => ({ ...sampleOut, instrument: 'BANKNIFTY', expiryMonth });
+    const a = setup({ out: month('NOV') });
+    await handleMessage('m1', SAMPLE, a.deps);
+    const b = { ...a.deps, run: (async () => JSON.stringify({ structured_output: month('DEC') })) as ClaudeRunner };
+    expect((await handleMessage('m2', SAMPLE, b)).result).toBe('ordered');
     expect(a.buys.map((x) => x.expiryMonth)).toEqual(['NOV', 'DEC']);
   });
 
   it('treats the same strike on different underlyings as different contracts', async () => {
-    const a = setup({ out: PAYTM_CALL_CLAUDE });
-    await handleMessage('m1', PAYTM_CALL, a.deps);
-    const b = { ...a.deps, run: (async () => JSON.stringify({ structured_output: { ...HAL_CALL_CLAUDE, strike: 2000 } })) as ClaudeRunner };
-    expect((await handleMessage('m2', HAL_CALL, b)).result).toBe('ordered');
-    expect(a.buys.map((x) => x.underlying)).toEqual(['PAYTM', 'HAL']);
+    const a = setup({ out: { ...sampleOut, instrument: 'BANKNIFTY' } });
+    await handleMessage('m1', SAMPLE, a.deps);
+    const b = { ...a.deps, run: (async () => JSON.stringify({ structured_output: { ...sampleOut, instrument: 'SENSEX' } })) as ClaudeRunner };
+    expect((await handleMessage('m2', SAMPLE, b)).result).toBe('ordered');
+    expect(a.buys.map((x) => x.underlying)).toEqual(['BANKNIFTY', 'SENSEX']);
   });
 
   it('ignores the real "Again" repost and the real cash posts before any Claude call', async () => {
@@ -119,9 +126,9 @@ describe('handleMessage', () => {
     expect(r.detail).toMatch(/unknown/);
   });
 
-  it('treats a dry run as skipped', async () => {
-    const { deps } = setup({ outcome: { status: 'unknown', reason: 'dry run' } });
-    expect((await handleMessage('m1', SAMPLE, deps)).result).toBe('skipped');
+  it('reports an order the broker did not place for lack of budget as skipped', async () => {
+    const { deps } = setup({ outcome: { status: 'skipped', reason: 'one lot costs 52000, over maxInvestment 50000' } });
+    expect(await handleMessage('m1', SAMPLE, deps)).toEqual({ result: 'skipped', detail: 'one lot costs 52000, over maxInvestment 50000' });
   });
 
   it('ignores an exit message', async () => {
