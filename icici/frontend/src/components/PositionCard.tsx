@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Card, Button, Badge, Row, Col, Form, InputGroup } from 'react-bootstrap';
 import { useTrading, Trade } from '../context/TradingContext';
+import { useAuth } from '../context/AuthContext';
 import DemoHelpTip from './DemoHelpTip';
 import { optionRight } from '../utils/optionRight';
 
@@ -8,7 +9,8 @@ import { optionRight } from '../utils/optionRight';
 // target/stop-loss controls and the pending-points hint while a fill waits for a price.
 export default function PositionCard({ trade, closed, demo }: { trade: Trade; closed?: boolean; demo?: boolean }) {
   const { squareOff, setTargetStopLoss, trades, locked, orderMode } = useTrading();
-  // Shown only when the same contract is open on more than one broker (an account trading on several brokers): each row is its own position.
+  const { isAdmin } = useAuth();
+  // Broker tags are for admins only. On an open position: only when the same contract is open on more than one broker (each row is its own position).
   const onSeveralBrokers = !closed && !!trade.broker && trades.some((o) => o.token === trade.token && o.broker !== trade.broker);
   const [targetPoints, setTargetPoints] = useState('');
   const [slPoints, setSlPoints] = useState('');
@@ -97,7 +99,7 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
                   {rightLabel}
                 </Badge>
               )}
-              {(onSeveralBrokers || (closed && trade.broker)) && (
+              {isAdmin && (onSeveralBrokers || (closed && trade.broker)) && (
                 <Badge bg="dark" className="ms-2 text-uppercase">{trade.broker}</Badge>
               )}
               {closed && (
