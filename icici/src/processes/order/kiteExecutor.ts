@@ -24,7 +24,7 @@ import { ownerSellCap } from './neverShortClass';
 import Mongo from '../../tools/mongo';
 import { registerEntryExit } from './entryExits';
 import { manualBuyChunked, squareOffAutoChunked, defaultFreezeQty } from './chunkedOrder';
-import { releaseGttsForSell, watchInApp, withGttSellLock, acquireGttSellLock, markKiteSelling, kiteSellBusy } from './gttRelease';
+import { releaseGttsForSell, watchInApp, withGttSellLock, acquireGttSellLock, markKiteSelling, kiteSellBusy, modifyPositionGtts } from './gttRelease';
 import type { Trade as TradeRow } from '../../model/model';
 
 // Kite is the primary execution broker (per current product decision - Prism
@@ -448,19 +448,11 @@ async function setTargetStopLossOnLeg(trade: Trade, targetPoints: number, stopLo
     }
     if (hasStop) trade.stopLossPrice = trade.price - stopLossPoints;
 
-    // A GTT always carries both legs, so both prices exist whenever one is attached.
+    // A GTT always carries both legs, so both prices exist whenever one is attached. A merged position holds several: modifyPositionGtts sizes them
+    // so that together they never exceed what is held.
     if (trade.gttTriggerId && trade.targetPrice !== undefined && trade.stopLossPrice !== undefined) {
-        const kite = Kite.getInstance();
-        const exchange = exchangeForTsym(trade.tsym);
-        await kite.modifyTargetStopLossGTT(
-            trade.gttTriggerId,
-            trade.tsym,
-            exchange,
-            trade.quantity,
-            trade.targetPrice,
-            trade.stopLossPrice,
-            trade.lastTradePrice || trade.price
-        );
+        const target = trade.targetPrice, stop = trade.stopLossPrice;
+        await withGttSellLock(trade.user, trade.tsym, () => modifyPositionGtts(trade.user, trade, target, stop));
     }
     // Breeze has no broker-side exit: the in-app exitMonitor is the only enforcement, so a target/stop set on a position bought without
     // one (manual buy with no exit points) must start the watch here. Re-registering an already-watched trade just replaces its entry

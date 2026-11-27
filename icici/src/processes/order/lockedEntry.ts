@@ -19,7 +19,7 @@ import * as exitMonitor from './exitMonitor';
 import { TRACKERS } from './pendingTrackers';
 import { defaultFreezeQty, throttleOrderPlacement } from './chunkedOrder';
 import { gttIdsOf, persistGttTriggerId, reprotectAfterBuy, placeLimitBuyBareOnKite, cancelOrderOnKite } from './kiteExecutor';
-import { acquireGttSellLock, kiteSellOpen } from './gttRelease';
+import { acquireGttSellLock, kiteSellOpen, uncoveredByGtts } from './gttRelease';
 import { placeLimitBuyBareOnAnt, cancelOrderOnAnt } from './antExecutor';
 import { placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, tsymFor } from './breezeExecutor';
 import { OptionExchange, OrderAlreadyFilledError } from './BrokerExecutor';
@@ -280,12 +280,14 @@ export async function protectLot(userId: string, trade: Trade, row: EntryExit): 
     const earlierInApp = held.quantity > trade.quantity && gttIdsOf(held).length === 0 && (held.stopLossPrice != null || held.targetPrice != null);
     if (broker === 'kite' && target !== undefined && stop !== undefined && bookkeeping.getUserUseGTT(userId) && !row.inAppExit && !earlierInApp && !sellBusy()) {
         // This lot's own GTT, for this lot's quantity: the GTTs of a position together never exceed it.
-        const quantity = Math.min(trade.quantity, held.quantity);
+        let quantity = Math.min(trade.quantity, held.quantity);
         if (quantity <= defaultFreezeQty(row.tsym, exchange)) {
             // Under the lock every platform sell takes: none can be placed between the check and the new GTT.
             const unlock = await acquireGttSellLock(userId, row.tsym);
             try {
-                if (!sellBusy()) {
+                // An earlier GTT may already cover part of this lot (resized to the whole position meanwhile): together never more than held.
+                if (!sellBusy()) quantity = Math.min(quantity, await uncoveredByGtts(held));
+                if (quantity > 0 && !sellBusy()) {
                     const id = await Kite.getInstance().placeTargetStopLossGTT(row.tsym, exchange, quantity, fill, target - fill, fill - stop, fill);
                     if (find() !== held || sellBusy() || held.quantity < quantity) {
                         // The position was sold, or a sell was placed, while the GTT was being placed: it must not stay live beside that sell.

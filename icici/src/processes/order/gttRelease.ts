@@ -9,6 +9,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { findPendingOrdersForSymbol } from './pendingLimitOrders';
 import { gttIdsOf, forgetGttIds, pollGttFills, isReprotecting, isGttGoneError, settleGtts } from './kiteExecutor';
+import { defaultFreezeQty } from './chunkedOrder';
 
 // A Kite GTT bypasses the never-short guard: live beside a platform sell of the same position it can sell the quantity a second time (live
 // 2026-11-27 10:18:03-10:18:11: the max-profit lock sell rested for 8 s while GTT 346629657 stayed active). The rule, for EVERY platform sell
@@ -71,6 +72,55 @@ export function kiteSellOpen(userId: string, tsym: string): boolean {
 /** kiteSellOpen, or an exit operation of the position is running: no GTT may be placed now. */
 export function kiteSellBusy(userId: string, tsym: string): boolean {
     return bookkeeping.pendingSquareOffs.has(`kite:${userId}:${tsym}`) || kiteSellOpen(userId, tsym);
+}
+
+// ---- The GTTs of one position never add up to more than it holds ----------------------------------------------------------------------------
+
+/** What the position's GTTs cover at the broker now. Throws when one of them is not live in the GTT book (fired, dead, missing): unknown then. */
+async function liveGttQuantities(row: Trade): Promise<{ id: number; quantity: number }[]> {
+    const book: any[] = await Kite.getInstance().getGTTs();
+    return gttIdsOf(row).map((id) => {
+        const gtt = book.find((g) => g.id === id);
+        const quantity = Number(gtt?.orders?.[0]?.quantity);
+        if (gtt?.status !== 'active' || !(quantity > 0)) {
+            void pollGttFills();
+            throw new Error(`GTT ${id} of ${row.tsym} has just triggered or is not live at Kite - try again in a minute`);
+        }
+        return { id, quantity };
+    });
+}
+
+/** How much of the position no GTT covers yet. Call inside withGttSellLock, before placing a further GTT beside the row's others. */
+export async function uncoveredByGtts(row: Trade): Promise<number> {
+    if (gttIdsOf(row).length === 0) return row.quantity;
+    return Math.max(0, row.quantity - (await liveGttQuantities(row)).reduce((sum, g) => sum + g.quantity, 0));
+}
+
+// Puts a target / stop on the position's existing GTTs without letting them add up to more than is held (each one sells past the never-short
+// guard): the later lots' GTTs keep their own quantity, the primary takes what is left (so one GTT covers the whole position, as before); beside an
+// open sell no GTT grows; one with nothing left to cover is deleted. Shrinks come before the primary's growth. Call inside withGttSellLock.
+export async function modifyPositionGtts(userId: string, row: Trade, target: number, stop: number): Promise<void> {
+    const ids = gttIdsOf(row);
+    if (ids.length === 0) return;
+    const kite = Kite.getInstance();
+    const exchange = exchangeForTsym(row.tsym);
+    const last = row.lastTradePrice || row.price;
+    const modify = (id: number, quantity: number) => kite.modifyTargetStopLossGTT(id, row.tsym, exchange, quantity, target, stop, last);
+    const busy = kiteSellBusy(userId, row.tsym);
+    // One GTT and no sell open: it is the only thing that can sell, so it covers the whole position (a fired one is refused by Kite's modify).
+    if (ids.length === 1 && !busy) { await modify(ids[0], row.quantity); return; }
+    const live = await liveGttQuantities(row);
+    const resting = findPendingOrdersForSymbol(userId, row.tsym).filter((o) => o.action === 'Sell').reduce((sum, o) => sum + Number(o.quantity ?? 0), 0);
+    let free = Math.max(0, row.quantity - resting);
+    for (const gtt of [...live.slice(1), live[0]]) {
+        const primary = gtt === live[0];
+        const quantity = primary && !busy ? Math.min(free, Math.max(gtt.quantity, defaultFreezeQty(row.tsym, exchange))) : Math.min(gtt.quantity, free);
+        free -= quantity;
+        if (quantity > 0) { await modify(gtt.id, quantity); continue; }
+        Log.log(`[order] ALERT: GTT ${gtt.id} of ${row.tsym} (${userId}) covers quantity the position no longer has free (held ${row.quantity}, resting sells ${resting}) - deleting it`);
+        try { await kite.deleteGTT(gtt.id); } catch (e) { if (!isGttGoneError(e)) throw e; }
+        await forgetGttIds(row, [gtt.id]);
+    }
 }
 
 // ---- Removing the GTTs -------------------------------------------------------------------------------------------------------------------------

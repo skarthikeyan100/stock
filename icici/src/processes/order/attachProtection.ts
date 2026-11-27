@@ -5,8 +5,8 @@ import { roundToTick } from '../../util/tick';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { exchangeForTsym } from '../../util/underlyings';
-import { persistGttTriggerId, isGttGoneError } from './kiteExecutor';
-import { withGttSellLock, kiteSellBusy } from './gttRelease';
+import { persistGttTriggerId, isGttGoneError, gttIdsOf } from './kiteExecutor';
+import { withGttSellLock, kiteSellBusy, modifyPositionGtts } from './gttRelease';
 import type { BrokerName } from '../../util/brokerName';
 
 // Attaches an absolute target / stop-loss to a position that is ALREADY open (a filled limit buy), unlike finalizeEntry which runs
@@ -49,13 +49,21 @@ export async function attachProtection(
             // A sell resting or in flight for the position owns its quantity: a GTT beside it could sell it twice.
             if (kiteSellBusy(userId, trade.tsym) || !bookkeeping.trades.includes(trade)) return undefined;
             try {
-                trade.gttTriggerId = await Kite.getInstance().placeTargetStopLossGTT(
-                    trade.tsym, exchange, trade.quantity, entry, target - entry, entry - stop, entry,
-                );
+                // Already GTT-protected (an earlier lot, a repeated call): a further GTT over the whole quantity would make them add up to more
+                // than is held, so the existing ones take the new levels.
+                if (gttIdsOf(trade).length > 0) {
+                    await modifyPositionGtts(userId, trade, target, stop);
+                } else {
+                    trade.gttTriggerId = await Kite.getInstance().placeTargetStopLossGTT(
+                        trade.tsym, exchange, trade.quantity, entry, target - entry, entry - stop, entry,
+                    );
+                    persistGttTriggerId(trade); // the Buy document was inserted before this GTT existed; a restart must learn its id
+                }
                 exitMonitor.registerTrade(trade, exchange, 'kite', true);
-                persistGttTriggerId(trade); // the Buy document was inserted before this GTT existed; a restart must learn its id
                 return trade.gttTriggerId;
             } catch (e) {
+                // Earlier GTTs left at their old levels keep the monitor watch-only: the new stop is held as its hard stop.
+                if (gttIdsOf(trade).length > 0) trade.hardStopPrice = Math.max(trade.hardStopPrice ?? 0, stop);
                 Log.log(`[order] attachProtection: GTT placement failed for ${tradingSymbol} (${userId}) - falling back to in-app target/SL monitoring:`, e);
                 return undefined;
             }
