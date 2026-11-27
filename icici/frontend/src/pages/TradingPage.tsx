@@ -12,6 +12,7 @@ import ThemeToggle from '../components/ThemeToggle';
 import OrderNotices from '../components/OrderNotices';
 import PendingBuyCard from '../components/PendingBuyCard';
 import { useMarketHours } from '../utils/marketHours';
+import { orderErrorText } from '../utils/orderErrorText';
 
 export default function TradingPage() {
   const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason, index, setIndex, orderMode, locked } = useTrading();
@@ -106,7 +107,7 @@ export default function TradingPage() {
         {/* Order Entry */}
         {tradingBlocked ? (
           <Alert variant="danger" className="text-center mb-4">
-            <strong>Trading disabled.</strong> {blockReason || 'You have breached a trading rule.'}
+            <strong>Trading disabled.</strong> {blockReason ? orderErrorText(blockReason, isAdmin) : 'You have breached a trading rule.'}
           </Alert>
         ) : (
           <>

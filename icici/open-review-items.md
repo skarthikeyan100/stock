@@ -197,7 +197,7 @@ Done: `settings.target` / `settings.stopLoss` with per-strategy overrides, used 
 
 184. User decision (option A), closes 181(a) and the bracket part of 166: a manual ANT buy (market route and its admin copy) is no longer a bracket order whatever `useGTT` says, so Edit and Square off work on it; the latest buy's target / stop govern the position; the card has no ANT special case. Accepted cost: with the platform down no stop rests at AliceBlue. Strategy ANT buys still use brackets. No stored ANT bracket buy existed. A may-be-live ANT manual buy now stays on the pending poller (a late fill is booked without target / stop, ALERT), as chunked and non-GTT buys already did. Not live-verified.
 
-Follow-up (user request, no item number): the broker tag on position, closed-trade and pending-buy cards is shown to admins only. A non-admin holding one contract on two brokers sees two unlabelled cards, each acting on its own broker's position. Error messages ("Not placed on <broker>: ...") still name the broker.
+Follow-up (user request, no item number): the broker tag on position, closed-trade and pending-buy cards is shown to admins only. A non-admin holding one contract on two brokers sees two unlabelled cards, each acting on its own broker's position. Order errors, order notices and the "Trading disabled" reason on the trading page are reworded for non-admins so they name no broker (`frontend/src/utils/orderErrorText.ts`; a "session not active" reason becomes "trading is not available right now - please contact support"). Not covered: notification bell messages and the Search & Buy quote error.
 
 
 ## Platform (2026-11-27)

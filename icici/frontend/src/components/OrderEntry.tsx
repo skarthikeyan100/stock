@@ -4,6 +4,7 @@ import { useTrading } from '../context/TradingContext';
 import { useAuth } from '../context/AuthContext';
 import { matchSymbols, parsePoints, SYMBOL_SEARCH_MIN_CHARS } from './orderEntryShared';
 import { apiFetch } from '../utils/api';
+import { orderErrorText } from '../utils/orderErrorText';
 import DemoHelpTip from './DemoHelpTip';
 import FlashSettingsModal from './FlashSettingsModal';
 import { DEMO_MAX_LOSS, useDemoMode } from '../context/DemoTradingContext';
@@ -43,7 +44,7 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
   // Not yet known whether the server takes orders at the shown price: nothing is bought until it is.
   const buyDisabled = isOrderDisabled || orderMode === 'checking';
   const otherIndex = index === 'NIFTY' ? 'SENSEX' : 'NIFTY';
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const { mode: demoMode } = useDemoMode(); // demo only: 'feed' = recorded day replayed in the browser
 
   const [input, setInput] = useState('');
@@ -381,7 +382,7 @@ export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'fla
 
       {orderError && (
         <Alert variant="danger" className="mt-2 py-2" dismissible onClose={clearError}>
-          {orderError}
+          {orderErrorText(orderError, isAdmin)}
         </Alert>
       )}
       {lossExceeded && (
